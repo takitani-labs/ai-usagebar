@@ -111,8 +111,20 @@ impl UsageResponse {
         let plan = format!("ChatGPT {}", capitalize(plan_type));
 
         let rl = self.rate_limit.unwrap_or_default();
-        let session = window_or_default(rl.primary_window, chrono::Duration::hours(5));
-        let weekly = window_or_default(rl.secondary_window, chrono::Duration::days(7));
+        // Some plans (e.g. Prolite) expose only a weekly window, delivered as
+        // `primary_window` with no secondary. Classify by duration instead of
+        // trusting the slot: a day or longer means it is the weekly window.
+        let mut primary = rl.primary_window;
+        let mut secondary = rl.secondary_window;
+        if secondary.is_none() {
+            if let Some(w) = &primary {
+                if w.limit_window_seconds >= 86_400 {
+                    secondary = primary.take();
+                }
+            }
+        }
+        let session = window_or_default(primary, chrono::Duration::hours(5));
+        let weekly = window_or_default(secondary, chrono::Duration::days(7));
         let code_review = self
             .code_review_rate_limit
             .and_then(|c| c.primary_window)
@@ -219,6 +231,37 @@ mod tests {
         assert!(s.code_review.is_none());
         assert!(s.credits.is_none());
         assert!(matches!(s.source, OpenAiSource::CodexOauth));
+    }
+
+    #[test]
+    fn weekly_only_plan_maps_primary_to_weekly() {
+        // Real Prolite shape (2026-07-20): a single 7d window arrives as
+        // primary_window and secondary_window is null.
+        let body = r#"{
+            "plan_type":"prolite",
+            "rate_limit":{"allowed":true,"limit_reached":false,
+                "primary_window":{"used_percent":59,"limit_window_seconds":604800,"reset_after_seconds":430149,"reset_at":1784984508},
+                "secondary_window":null
+            }
+        }"#;
+        let r: UsageResponse = serde_json::from_str(body).unwrap();
+        let s = r.into_snapshot(None);
+        assert_eq!(s.weekly.utilization_pct, 59);
+        assert!(s.weekly.resets_at.is_some());
+        assert_eq!(s.session.utilization_pct, 0);
+        assert!(s.session.resets_at.is_none());
+        assert_eq!(s.session.window_duration, chrono::Duration::hours(5));
+    }
+
+    #[test]
+    fn lone_short_primary_window_stays_session() {
+        let body = r#"{"rate_limit":{"primary_window":{
+            "used_percent":40,"limit_window_seconds":18000,"reset_after_seconds":9000
+        }}}"#;
+        let r: UsageResponse = serde_json::from_str(body).unwrap();
+        let s = r.into_snapshot(None);
+        assert_eq!(s.session.utilization_pct, 40);
+        assert_eq!(s.weekly.utilization_pct, 0);
     }
 
     #[test]
