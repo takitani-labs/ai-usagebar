@@ -325,6 +325,29 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                     .await?;
             Ok(outcome.into())
         }
+        VendorId::Gemini => {
+            let cache = crate::cache::Cache::for_vendor("gemini")?;
+            let creds_path = config
+                .gemini
+                .oauth_credentials_path
+                .clone()
+                .unwrap_or_else(|| crate::gemini::creds::default_path().unwrap_or_default());
+            let endpoints = crate::gemini::fetch::Endpoints::default();
+            let client_secret = std::env::var(crate::gemini::oauth::CLIENT_SECRET_ENV)
+                .ok()
+                .filter(|s| !s.is_empty())
+                .or_else(|| config.gemini.oauth_client_secret.clone());
+            let outcome = crate::gemini::fetch_snapshot(
+                client,
+                &creds_path,
+                &cache,
+                &endpoints,
+                DEFAULT_TTL,
+                client_secret.as_deref(),
+            )
+            .await?;
+            Ok(outcome.into())
+        }
     }
 }
 
@@ -366,6 +389,7 @@ mod tests {
         config.openai.enabled = false;
         config.zai.enabled = false;
         config.openrouter.enabled = false;
+        config.gemini.enabled = false;
         config.anthropic.accounts = labels
             .iter()
             .map(|l| crate::config::AnthropicAccount {

@@ -116,12 +116,11 @@ impl UsageResponse {
         // trusting the slot: a day or longer means it is the weekly window.
         let mut primary = rl.primary_window;
         let mut secondary = rl.secondary_window;
-        if secondary.is_none() {
-            if let Some(w) = &primary {
-                if w.limit_window_seconds >= 86_400 {
-                    secondary = primary.take();
-                }
-            }
+        if secondary.is_none()
+            && let Some(w) = &primary
+            && w.limit_window_seconds >= 86_400
+        {
+            secondary = primary.take();
         }
         let session = window_or_default(primary, chrono::Duration::hours(5));
         let weekly = window_or_default(secondary, chrono::Duration::days(7));

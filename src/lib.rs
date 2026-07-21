@@ -11,11 +11,13 @@
 pub mod active;
 pub mod anthropic;
 pub mod cache;
+pub mod claude_projects;
 pub mod config;
 pub mod countdown;
 pub mod deepseek;
 pub mod error;
 pub mod format;
+pub mod gemini;
 pub mod kimi;
 pub mod openai;
 pub mod openrouter;

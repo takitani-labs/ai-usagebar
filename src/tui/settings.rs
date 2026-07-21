@@ -620,6 +620,7 @@ fn vendor_label(v: VendorId) -> &'static str {
         VendorId::Openrouter => "OpenRouter",
         VendorId::Deepseek => "DeepSeek",
         VendorId::Kimi => "Kimi",
+        VendorId::Gemini => "Gemini",
     }
 }
 
@@ -974,6 +975,7 @@ api_key_env = "KIMI_API_KEY"
         cfg.openai.enabled = false;
         cfg.zai.enabled = false;
         cfg.openrouter.enabled = false;
+        cfg.gemini.enabled = false;
         cfg.kimi.enabled = true;
         cfg.ui.primary = Some(VendorId::Openai); // disabled and ineffective
 
@@ -1020,6 +1022,7 @@ primary = "deepseek"
         cfg.openrouter.enabled = false;
         cfg.deepseek.enabled = false;
         cfg.kimi.enabled = false;
+        cfg.gemini.enabled = false;
         cfg.ui.primary = Some(VendorId::Deepseek);
         let mut state = SettingsState::from_config(&cfg);
         state.zai = KeyInput::from_config(Some("new-key"));

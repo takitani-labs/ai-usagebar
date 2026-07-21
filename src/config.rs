@@ -8,6 +8,7 @@
 //! [openrouter] enabled = true
 //! [deepseek]   enabled = false
 //! [kimi]       enabled = false
+//! [gemini]     enabled = true    # OAuth from ~/.gemini/oauth_creds.json
 //! ```
 //!
 //! Every field is optional with sensible defaults — missing config file is
@@ -34,6 +35,7 @@ pub struct Config {
     pub openrouter: OpenRouterConfig,
     pub deepseek: DeepseekConfig,
     pub kimi: KimiConfig,
+    pub gemini: GeminiConfig,
 }
 
 /// UI / dispatch preferences. Currently just `primary` — which vendor the
@@ -239,6 +241,30 @@ impl Default for KimiConfig {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct GeminiConfig {
+    pub enabled: bool,
+    /// Override gemini-cli's OAuth credentials path.
+    pub oauth_credentials_path: Option<PathBuf>,
+    /// gemini-cli's public desktop OAuth client secret, needed only to refresh
+    /// an expired access token. It is NOT ai-usagebar's own secret: it is the
+    /// constant gemini-cli itself ships (Apache-2.0), so it is not committed
+    /// here. Provide it inline or via the `GEMINI_OAUTH_CLIENT_SECRET` env var;
+    /// obtain the value from your installed gemini-cli (see config.example.toml).
+    pub oauth_client_secret: Option<String>,
+}
+
+impl Default for GeminiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            oauth_credentials_path: None,
+            oauth_client_secret: None,
+        }
+    }
+}
+
 /// Resolve an API key for a vendor: a valid env-var name wins, then inline
 /// config. Used by Z.AI, OpenRouter, DeepSeek, and Kimi vendors.
 pub fn resolve_api_key(
@@ -309,6 +335,7 @@ impl Config {
             VendorId::Openrouter => self.openrouter.enabled,
             VendorId::Deepseek => self.deepseek.enabled,
             VendorId::Kimi => self.kimi.enabled,
+            VendorId::Gemini => self.gemini.enabled,
         }
     }
 
@@ -367,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn defaults_enable_core_vendors_deepseek_and_kimi_default_off() {
+    fn defaults_enable_oauth_and_core_vendors_with_api_key_vendors_opt_in() {
         let c = Config::default();
         assert!(c.is_enabled(VendorId::Anthropic));
         assert!(c.is_enabled(VendorId::Openai));
@@ -376,7 +403,8 @@ mod tests {
         // DeepSeek and Kimi require explicit API keys, so they default to disabled.
         assert!(!c.is_enabled(VendorId::Deepseek));
         assert!(!c.is_enabled(VendorId::Kimi));
-        assert_eq!(c.enabled_vendors().len(), 4);
+        assert!(c.is_enabled(VendorId::Gemini));
+        assert_eq!(c.enabled_vendors().len(), 5);
     }
 
     #[test]
@@ -581,7 +609,7 @@ enabled = false
     #[test]
     fn enabled_vendors_preserves_canonical_order() {
         // DeepSeek and Kimi are disabled by default (require explicit API key
-        // config), so they are absent from the enabled list unless enabled.
+        // config); Gemini uses gemini-cli OAuth and is enabled by default.
         let c = Config::default();
         assert_eq!(
             c.enabled_vendors(),
@@ -590,6 +618,7 @@ enabled = false
                 VendorId::Openai,
                 VendorId::Zai,
                 VendorId::Openrouter,
+                VendorId::Gemini,
             ]
         );
     }
@@ -647,7 +676,25 @@ enabled = false
                 VendorId::Openrouter,
                 VendorId::Deepseek,
                 VendorId::Kimi,
+                VendorId::Gemini,
             ]
+        );
+    }
+
+    #[test]
+    fn gemini_credentials_path_can_be_overridden() {
+        let f = write_toml(
+            r#"
+            [gemini]
+            enabled = true
+            oauth_credentials_path = "/tmp/gemini-oauth.json"
+            "#,
+        );
+        let c = Config::load_from(f.path()).unwrap();
+        assert!(c.is_enabled(VendorId::Gemini));
+        assert_eq!(
+            c.gemini.oauth_credentials_path.as_deref(),
+            Some(std::path::Path::new("/tmp/gemini-oauth.json"))
         );
     }
 

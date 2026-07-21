@@ -45,6 +45,7 @@ fn vendor_label(id: VendorId) -> &'static str {
         VendorId::Openrouter => "OpenRouter",
         VendorId::Deepseek => "DeepSeek",
         VendorId::Kimi => "Kimi",
+        VendorId::Gemini => "Gemini",
     }
 }
 
@@ -56,6 +57,7 @@ fn compact_vendor_label(id: VendorId) -> &'static str {
         VendorId::Openrouter => "OpenRouter",
         VendorId::Deepseek => "DeepSeek",
         VendorId::Kimi => "Kimi",
+        VendorId::Gemini => "Gemini",
     }
 }
 

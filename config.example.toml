@@ -8,7 +8,7 @@
 [ui]
 # Which vendor the widget shows when `--vendor` is omitted, AND which tab
 # is selected when the TUI opens. Comment out to default to Anthropic.
-# Valid: anthropic | openai | zai | openrouter | deepseek | kimi
+# Valid: anthropic | openai | zai | openrouter | deepseek | kimi | gemini
 # primary = "anthropic"
 
 [anthropic]
@@ -54,3 +54,18 @@ api_key_env = "DEEPSEEK_API_KEY"  # checked first; if set + non-empty, used
 enabled = false
 api_key_env = "KIMI_API_KEY"      # checked first; if set + non-empty, used
 # api_key = "sk-..."              # fallback; chmod 600 the file if you use it
+
+[gemini]
+enabled = true
+# Read-only gemini-cli OAuth state. Leave commented to use
+# ~/.gemini/oauth_creds.json; refreshed tokens are never written back here.
+# oauth_credentials_path = "/home/you/.gemini/oauth_creds.json"
+#
+# Refreshing an expired access token needs gemini-cli's public desktop OAuth
+# client secret. It is gemini-cli's own constant (Apache-2.0), not a secret of
+# this project, so it is not shipped here. Set it inline below or via the
+# GEMINI_OAUTH_CLIENT_SECRET env var (env wins). Without it, an expired token
+# just shows a "run `gemini` to refresh" state instead of live numbers.
+# Grab the value from your installed gemini-cli, e.g.:
+#   grep -rhoE 'GOCSPX-[A-Za-z0-9_-]+' "$(npm root -g)/@google/gemini-cli" | head -1
+# oauth_client_secret = "GOCSPX-..."

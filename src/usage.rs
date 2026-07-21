@@ -5,7 +5,8 @@
 //! windows + credit balance + message-count ranges; OpenRouter is a single
 //! credit-balance number with daily/weekly/monthly totals; Z.AI is a list of
 //! token + MCP buckets; DeepSeek is a credit balance; Kimi is a weekly quota
-//! plus a 5h rolling rate-limit window. Forcing them into a shared shape would
+//! plus a 5h rolling rate-limit window; Gemini is a per-model daily quota.
+//! Forcing them into a shared shape would
 //! either drop information or paper over genuine differences.
 //!
 //! Renderers (widget tooltip, TUI tab) consume a `VendorSnapshot` directly,
@@ -157,6 +158,19 @@ impl KimiSnapshot {
     }
 }
 
+/// Gemini Code Assist — one daily request-quota bucket per model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeminiSnapshot {
+    pub tier: String,
+    pub buckets: Vec<GeminiBucket>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeminiBucket {
+    pub model: String,
+    pub window: UsageWindow,
+}
+
 /// Discriminated union of vendor-specific snapshots. The widget and TUI match
 /// on this to pick a renderer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,6 +181,7 @@ pub enum VendorSnapshot {
     Openrouter(OpenRouterSnapshot),
     Deepseek(DeepseekSnapshot),
     Kimi(KimiSnapshot),
+    Gemini(GeminiSnapshot),
 }
 
 /// OpenAI Codex OAuth — mirrors Anthropic's two-window + extras pattern.
@@ -280,6 +295,17 @@ pub fn anthropic_severity(snap: &AnthropicSnapshot) -> crate::pacing::PaceSeveri
         }
     }
     crate::pango::severity_for(max)
+}
+
+/// Worst per-model daily bucket controls Gemini's widget severity.
+pub fn gemini_severity(snap: &GeminiSnapshot) -> crate::pacing::PaceSeverity {
+    let worst = snap
+        .buckets
+        .iter()
+        .map(|bucket| bucket.window.utilization_pct)
+        .max()
+        .unwrap_or(0);
+    crate::pango::severity_for(worst)
 }
 
 #[cfg(test)]
@@ -415,5 +441,30 @@ mod tests {
         };
         assert_eq!(snap.weekly_pct(), 50);
         assert_eq!(snap.window_pct(), 100);
+    }
+
+    #[test]
+    fn gemini_severity_uses_worst_bucket() {
+        let snap = GeminiSnapshot {
+            tier: "standard-tier".into(),
+            buckets: vec![
+                GeminiBucket {
+                    model: "gemini-2.5-pro".into(),
+                    window: w(20),
+                },
+                GeminiBucket {
+                    model: "gemini-2.0-flash".into(),
+                    window: w(92),
+                },
+            ],
+        };
+        assert_eq!(gemini_severity(&snap), PaceSeverity::Critical);
+        assert_eq!(
+            gemini_severity(&GeminiSnapshot {
+                tier: "standard-tier".into(),
+                buckets: vec![],
+            }),
+            PaceSeverity::Low
+        );
     }
 }

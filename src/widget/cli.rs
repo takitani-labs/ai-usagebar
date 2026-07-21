@@ -1,5 +1,5 @@
 //! Command-line interface — claudebar-compatible flags plus the new
-//! local-testing additions (`--pretty`, `--watch`, `--json`).
+//! local-testing additions (`--pretty`, `--watch`, `--json`, `--projects`).
 //!
 //! Mirrors claudebar:54-93. The defaults are identical so existing waybar
 //! configs that invoke `claudebar ...` can be retargeted to
@@ -10,7 +10,7 @@ use clap::{Parser, ValueEnum};
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "ai-usagebar",
-    about = "Waybar widget for AI plan usage (Anthropic / OpenAI / Z.AI / OpenRouter / DeepSeek / Kimi)",
+    about = "Waybar widget for AI plan usage (Anthropic / OpenAI / Z.AI / OpenRouter / DeepSeek / Kimi / Gemini)",
     long_about = "\
 Drop-in replacement for `claudebar` with multi-vendor support.
 
@@ -21,7 +21,8 @@ Output modes:
     in a terminal Does The Right Thing.
   - --watch N: like --pretty but refreshes every N seconds, clearing the screen
     between ticks. Useful while iterating on `--format` or `--tooltip-format`.
-  - --json: force JSON output even when stdout is a TTY (for scripting)."
+  - --json: force JSON output even when stdout is a TTY (for scripting).
+  - --projects: scan local Claude Code transcripts for per-project usage."
 )]
 pub struct Cli {
     /// Which vendor to query. When omitted, reads `[ui] primary` from
@@ -37,7 +38,7 @@ pub struct Cli {
 
     /// Bar-text format string with `{placeholder}` substitutions. Defaults to
     /// a vendor-specific format (e.g. `{session_pct}% · {session_reset}` for
-    /// Anthropic, `{kimi_weekly_pct}%` for Kimi).
+    /// Anthropic, `{gemini_pro_pct}% · {gemini_pro_reset}` for Gemini).
     #[arg(long)]
     pub format: Option<String>,
 
@@ -83,6 +84,12 @@ pub struct Cli {
     /// an interactive shell).
     #[arg(long, conflicts_with = "pretty")]
     pub json: bool,
+
+    /// Scan local Claude Code transcripts and report per-project usage for
+    /// rolling session (5h) and weekly (7d) windows. This mode is local-only
+    /// and skips vendor API requests entirely.
+    #[arg(long)]
+    pub projects: bool,
 
     /// Re-render every N seconds, clearing the screen between ticks. Implies
     /// `--pretty`. Press Ctrl-C to exit.
@@ -131,6 +138,7 @@ pub enum Vendor {
     Openrouter,
     Deepseek,
     Kimi,
+    Gemini,
 }
 
 impl Vendor {
@@ -142,6 +150,7 @@ impl Vendor {
             Vendor::Openrouter => crate::vendor::VendorId::Openrouter,
             Vendor::Deepseek => crate::vendor::VendorId::Deepseek,
             Vendor::Kimi => crate::vendor::VendorId::Kimi,
+            Vendor::Gemini => crate::vendor::VendorId::Gemini,
         }
     }
 }
@@ -220,6 +229,7 @@ fn id_to_vendor(id: crate::vendor::VendorId) -> Vendor {
         crate::vendor::VendorId::Openrouter => Vendor::Openrouter,
         crate::vendor::VendorId::Deepseek => Vendor::Deepseek,
         crate::vendor::VendorId::Kimi => Vendor::Kimi,
+        crate::vendor::VendorId::Gemini => Vendor::Gemini,
     }
 }
 
@@ -266,6 +276,7 @@ mod tests {
         assert!(!cli.tooltip_pace_pts);
         assert!(!cli.pretty);
         assert!(!cli.json);
+        assert!(!cli.projects);
         assert!(cli.watch.is_none());
     }
 
@@ -318,6 +329,13 @@ mod tests {
         let cli = Cli::parse_from(["ai-usagebar", "--vendor", "kimi"]);
         assert_eq!(cli.vendor, Some(Vendor::Kimi));
         assert_eq!(cli.vendor.unwrap().to_id(), crate::vendor::VendorId::Kimi);
+    }
+
+    #[test]
+    fn vendor_gemini_parses_to_gemini_variant() {
+        let cli = Cli::parse_from(["ai-usagebar", "--vendor", "gemini"]);
+        assert_eq!(cli.vendor, Some(Vendor::Gemini));
+        assert_eq!(cli.vendor.unwrap().to_id(), crate::vendor::VendorId::Gemini);
     }
 
     #[test]
@@ -400,6 +418,13 @@ mod tests {
     fn pretty_and_json_conflict() {
         let res = Cli::try_parse_from(["ai-usagebar", "--pretty", "--json"]);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn projects_flag_parses() {
+        let cli = Cli::parse_from(["ai-usagebar", "--projects", "--json"]);
+        assert!(cli.projects);
+        assert!(cli.output_json());
     }
 
     #[test]

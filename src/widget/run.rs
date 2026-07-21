@@ -10,9 +10,11 @@ use reqwest::Client;
 
 use crate::anthropic::{self, creds::CredsTarget, fetch::FetchOutcome};
 use crate::cache::{Cache, DEFAULT_TTL};
+use crate::claude_projects;
 use crate::config::Config;
 use crate::deepseek;
 use crate::error::{AppError, Result};
+use crate::gemini;
 use crate::kimi;
 use crate::openai;
 use crate::openrouter;
@@ -28,6 +30,12 @@ use crate::zai;
 /// Entry point — runs to completion and ALWAYS returns Ok with exit code 0
 /// in the caller. Mirrors claudebar's `die()` invariant.
 pub async fn run(cli: Cli) -> i32 {
+    // Project usage is a local-only mode. Keep this before every vendor,
+    // config, watch, and cycle path so it can never trigger a network fetch.
+    if cli.projects {
+        run_projects(&cli, &mut std::io::stdout());
+        return 0;
+    }
     // Scroll-cycle short-circuit: don't render, just bump state + signal waybar.
     if cli.cycle_next || cli.cycle_prev {
         return run_cycle(&cli).await;
@@ -37,6 +45,20 @@ pub async fn run(cli: Cli) -> i32 {
     }
     run_once(&cli, &mut std::io::stdout()).await;
     0
+}
+
+fn run_projects(cli: &Cli, out: &mut impl Write) {
+    let result = claude_projects::scan(Utc::now());
+    if cli.output_json() {
+        let _ = serde_json::to_writer(&mut *out, &result.report);
+        let _ = out.write_all(b"\n");
+    } else {
+        for warning in &result.warnings {
+            eprintln!("ai-usagebar: {warning}");
+        }
+        let _ = claude_projects::print_pretty(out, &result.report);
+    }
+    let _ = out.flush();
 }
 
 /// Cycle to the next/prev enabled vendor and signal waybar to refresh.
@@ -111,6 +133,7 @@ async fn build_output(cli: &Cli) -> Result<WaybarOutput> {
         Vendor::Zai => zai_output(cli, &config).await,
         Vendor::Deepseek => deepseek_output(cli, &config).await,
         Vendor::Kimi => kimi_output(cli, &config).await,
+        Vendor::Gemini => gemini_output(cli, &config).await,
     }
 }
 
@@ -278,6 +301,49 @@ async fn kimi_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
         &theme,
         &opts,
         chrono::Utc::now(),
+    ))
+}
+
+async fn gemini_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
+    let client = http_client()?;
+    let cache = vendor_cache(cli, "gemini")?;
+    let creds_path = match config.gemini.oauth_credentials_path.as_deref() {
+        Some(path) => path.to_path_buf(),
+        None => gemini::creds::default_path()?,
+    };
+    let endpoints = gemini::fetch::Endpoints::default();
+    // gemini-cli's public desktop client secret, needed only to refresh an
+    // expired token. Not committed here: env var wins, then inline config.
+    let client_secret = std::env::var(gemini::oauth::CLIENT_SECRET_ENV)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| config.gemini.oauth_client_secret.clone());
+    let outcome = match gemini::fetch_snapshot(
+        &client,
+        &creds_path,
+        &cache,
+        &endpoints,
+        DEFAULT_TTL,
+        client_secret.as_deref(),
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) if error.is_transient() => {
+            return Ok(WaybarOutput::loading(cli.icon.as_deref()));
+        }
+        Err(error) => return Err(error),
+    };
+
+    let theme = theme_from_cli(cli);
+    let snapshot = outcome.snapshot.clone();
+    let vendor_outcome: VendorOutcome = outcome.into();
+    Ok(gemini::vendor::render(
+        &vendor_outcome,
+        &snapshot,
+        &theme,
+        &RenderOpts::from_cli(cli),
+        Utc::now(),
     ))
 }
 

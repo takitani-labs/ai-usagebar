@@ -83,6 +83,7 @@ pub fn sections_for(tab: &TabState, now: DateTime<Utc>, pace_tolerance: u32) -> 
                 VendorSnapshot::Openrouter(s) => openrouter_sections(s),
                 VendorSnapshot::Deepseek(s) => deepseek_sections(s),
                 VendorSnapshot::Kimi(s) => kimi_sections(s, now, pace_tolerance),
+                VendorSnapshot::Gemini(s) => gemini_sections(s, now, pace_tolerance),
             };
             // Inject the (already-absolute) fetched-at instant into the title
             // row, right-aligned. Pre-snapshotted in app::refresh_one so it
@@ -353,6 +354,35 @@ fn kimi_sections(s: &crate::usage::KimiSnapshot, now: DateTime<Utc>, _tol: u32) 
     v
 }
 
+fn gemini_sections(
+    snapshot: &crate::usage::GeminiSnapshot,
+    now: DateTime<Utc>,
+    tolerance: u32,
+) -> Vec<Section> {
+    let mut sections = vec![Section::Title {
+        left: format!("Gemini · {}", snapshot.tier),
+        right: None,
+    }];
+    for bucket in &snapshot.buckets {
+        push_window(
+            &mut sections,
+            &bucket.model,
+            &bucket.window,
+            now,
+            tolerance,
+            true,
+        );
+    }
+    if snapshot.buckets.is_empty() {
+        sections.push(Section::Spacer);
+        sections.push(Section::Text {
+            label: "".into(),
+            value: "  no REQUESTS quota buckets reported".into(),
+        });
+    }
+    sections
+}
+
 fn push_window(
     sections: &mut Vec<Section>,
     label: &str,
@@ -595,8 +625,8 @@ fn render_block(f: &mut Frame, area: Rect, bubble: &BubbleTheme, label: &str, bo
 mod tests {
     use super::*;
     use crate::usage::{
-        AnthropicSnapshot, Cents, ExtraUsage, KimiSnapshot, OpenAiCredits, OpenAiSnapshot,
-        OpenAiSource, OpenRouterSnapshot, UsageWindow, ZaiSnapshot,
+        AnthropicSnapshot, Cents, ExtraUsage, GeminiBucket, GeminiSnapshot, KimiSnapshot,
+        OpenAiCredits, OpenAiSnapshot, OpenAiSource, OpenRouterSnapshot, UsageWindow, ZaiSnapshot,
     };
     use chrono::TimeZone;
 
@@ -860,6 +890,43 @@ mod tests {
             .filter(|s| matches!(s, Section::Metric { .. }))
             .count();
         assert_eq!(metric_count, 1);
+    }
+
+    #[test]
+    fn gemini_sections_render_one_metric_per_model() {
+        let snapshot = GeminiSnapshot {
+            tier: "standard-tier".into(),
+            buckets: vec![
+                GeminiBucket {
+                    model: "gemini-2.0-flash".into(),
+                    window: UsageWindow {
+                        utilization_pct: 10,
+                        resets_at: None,
+                        window_duration: chrono::Duration::hours(24),
+                    },
+                },
+                GeminiBucket {
+                    model: "gemini-2.5-pro".into(),
+                    window: UsageWindow {
+                        utilization_pct: 75,
+                        resets_at: None,
+                        window_duration: chrono::Duration::hours(24),
+                    },
+                },
+            ],
+        };
+        let sections = sections_for(&ready(VendorSnapshot::Gemini(snapshot)), now(), 5);
+        assert!(matches!(
+            &sections[0],
+            Section::Title { left, .. } if left.contains("standard-tier")
+        ));
+        assert_eq!(
+            sections
+                .iter()
+                .filter(|section| matches!(section, Section::Metric { .. }))
+                .count(),
+            2
+        );
     }
 
     #[test]

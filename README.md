@@ -1,8 +1,8 @@
 # ai-usagebar
 
-Waybar widget and tabbed TUI for AI plan usage across **Anthropic Claude**, **OpenAI Codex/ChatGPT**, **Z.AI (GLM)**, **OpenRouter**, **DeepSeek**, and **Kimi**.
+Waybar widget and tabbed TUI for AI plan usage across **Anthropic Claude**, **OpenAI Codex/ChatGPT**, **Z.AI (GLM)**, **OpenRouter**, **DeepSeek**, **Kimi**, and **Gemini Code Assist**.
 
-This started as a Rust port of [`claudebar`](https://github.com/mryll/claudebar) and stays drop-in compatible with it. It keeps the minimalist Pango-bordered tooltip, Omarchy theme auto-detection, and flock-protected OAuth refresh, then adds five more vendors and a proper testable codebase instead of one long shell script.
+This started as a Rust port of [`claudebar`](https://github.com/mryll/claudebar) and stays drop-in compatible with it. It keeps the minimalist Pango-bordered tooltip, Omarchy theme auto-detection, and flock-protected OAuth refresh, then adds six more vendors and a proper testable codebase instead of one long shell script.
 
 ![Waybar widget showing `cld 29% · 1h 12m` in the top-right, with the hover tooltip showing Claude Max 20x session/weekly/sonnet/extra-usage progress bars](screenshot.png)
 
@@ -65,14 +65,15 @@ cargo build --release
 
 Credentials are read from the Windows user profile rather than `$HOME`:
 `%USERPROFILE%\.claude\.credentials.json` (Anthropic) and
-`%USERPROFILE%\.codex\auth.json` (OpenAI Codex). Run the official `claude` /
-`codex` CLI once on Windows to populate them, exactly as on Linux/macOS.
+`%USERPROFILE%\.codex\auth.json` (OpenAI Codex), and
+`%USERPROFILE%\.gemini\oauth_creds.json` (Gemini). Run the relevant official
+CLI once on Windows to populate them, exactly as on Linux/macOS.
 API-key vendors (Z.AI, OpenRouter, DeepSeek, Kimi) work unchanged via environment
 variables or `config.toml`.
 
 ## Authentication
 
-Each vendor authenticates a little differently. Anthropic and OpenAI use OAuth credentials that their official CLIs already wrote to disk, so **no env vars are needed.** Z.AI, OpenRouter, DeepSeek, and Kimi use API keys. You can pass those through env vars or, if you don't source secrets in your shell, put them inline in `config.toml`.
+Each vendor authenticates a little differently. Anthropic, OpenAI, and Gemini use OAuth credentials that their official CLIs already wrote to disk, so **no env vars are needed.** Z.AI, OpenRouter, DeepSeek, and Kimi use API keys. You can pass those through env vars or, if you don't source secrets in your shell, put them inline in `config.toml`.
 
 | Vendor | Method | Action required |
 |---|---|---|
@@ -82,6 +83,7 @@ Each vendor authenticates a little differently. Anthropic and OpenAI use OAuth c
 | OpenRouter | API key (`OPENROUTER_API_KEY` env or `[openrouter] api_key` in config) | Set either. |
 | DeepSeek | API key (`DEEPSEEK_API_KEY` env or `[deepseek] api_key` in config) | Set either. Disabled by default — add `[deepseek] enabled = true` to config. |
 | Kimi | API key (`KIMI_API_KEY` env or `[kimi] api_key` in config) | Set either. Disabled by default — add `[kimi] enabled = true` to config. |
+| Gemini | OAuth, read-only from `~/.gemini/oauth_creds.json` | Run `gemini` once and sign in. Refreshing an expired token needs gemini-cli's public client secret via `GEMINI_OAUTH_CLIENT_SECRET` env or `[gemini] oauth_client_secret` (not shipped here; see `config.example.toml`). Refreshes happen in memory, never written to gemini-cli's file. |
 
 ### Credential resolution order (for API-key vendors)
 
@@ -95,7 +97,7 @@ For each API-key vendor, ai-usagebar checks in this order:
 
 - If you put inline `api_key` values in config, `chmod 600 ~/.config/ai-usagebar/config.toml`. The default behavior reads only env vars, which is safer when your config might be world-readable.
 - Don't commit your config dir if you check it into dotfiles unless you've redacted `api_key` lines.
-- OAuth credential files (`~/.claude/.credentials.json`, `~/.codex/auth.json`) are managed by their respective CLIs and already chmod-protected.
+- OAuth credential files (`~/.claude/.credentials.json`, `~/.codex/auth.json`, `~/.gemini/oauth_creds.json`) are managed by their respective CLIs and already chmod-protected.
 
 #### macOS: Anthropic credentials in the Keychain
 
@@ -103,13 +105,13 @@ On macOS, recent Claude Code builds don't write `~/.claude/.credentials.json` �
 
 ## Configuration
 
-`~/.config/ai-usagebar/config.toml` (optional — defaults enable Anthropic, OpenAI, Z.AI, and OpenRouter; DeepSeek and Kimi are opt-in). Full example:
+`~/.config/ai-usagebar/config.toml` (optional — defaults enable Anthropic, OpenAI, Z.AI, OpenRouter, and Gemini; DeepSeek and Kimi are opt-in). Full example:
 
 ```toml
 [ui]
 # Which vendor the widget shows when --vendor is omitted, AND which tab
 # is selected when the TUI opens. Defaults to anthropic when not set.
-# primary = "anthropic"   # anthropic | openai | zai | openrouter | deepseek | kimi
+# primary = "anthropic"   # anthropic | openai | zai | openrouter | deepseek | kimi | gemini
 
 [anthropic]
 enabled = true
@@ -139,6 +141,11 @@ api_key_env = "DEEPSEEK_API_KEY"
 enabled = true             # disabled by default; enable once you add an API key
 api_key_env = "KIMI_API_KEY"
 # api_key = "sk-..."       # used if KIMI_API_KEY is unset; chmod 600 the file!
+
+[gemini]
+enabled = true
+# oauth_credentials_path = "/home/you/.gemini/oauth_creds.json"
+# oauth_client_secret = "GOCSPX-..."   # or GEMINI_OAUTH_CLIENT_SECRET env; see config.example.toml
 ```
 
 ## Quick start
@@ -151,6 +158,7 @@ ai-usagebar --vendor zai
 ai-usagebar --vendor openrouter
 ai-usagebar --vendor deepseek
 ai-usagebar --vendor kimi
+ai-usagebar --vendor gemini
 
 # Force Waybar JSON (e.g. piping into jq).
 ai-usagebar --json
@@ -180,7 +188,7 @@ The Waybar widget is optional. The TUI is the best way to see every enabled vend
 
 ## Native desktop integrations (v0.13)
 
-The [GNOME Shell extension](gnome-extension/README.md) and [macOS menu bar app](macos/README.md) support selectors for **Anthropic, OpenAI, Z.AI, OpenRouter, and DeepSeek**. **Kimi is widget/TUI-only in v0.13**; do not select it in either native desktop integration yet. Desktop protocol and marker parity for Kimi is dedicated future work.
+The [GNOME Shell extension](gnome-extension/README.md) and [macOS menu bar app](macos/README.md) support selectors for **Anthropic, OpenAI, Z.AI, OpenRouter, and DeepSeek**. **Kimi and Gemini are widget/TUI-only in v0.13**; do not select them in either native desktop integration yet.
 
 ## Waybar config
 
@@ -203,7 +211,7 @@ Use one bar item and scroll through your vendors. The TUI on-click still shows t
 }
 ```
 
-The `{vendor_short}` placeholder always expands to a 3-letter vendor ID (`cld` / `gpt` / `zai` / `opr` / `dsk` / `kmi`), so the bar text tells you which vendor is active. The other usage placeholders (`{session_pct}` for Anthropic, `{oai_session_pct}` for OpenAI, etc.) are vendor-specific. If you want one format string for every cycled vendor, prefer the generic aliases: `{session_pct}`, `{session_reset}`, `{weekly_pct}`, and `{weekly_reset}` are implemented by all six vendors (Anthropic, OpenAI, Z.AI, OpenRouter, DeepSeek, and Kimi; OpenRouter and DeepSeek use `0` / `—` for the windows they don't expose). Anthropic and OpenAI add `*_elapsed`, `*_pace`, and `*_bar` families; each vendor also exposes its own `{oai_*}` / `{zai_*}` / `{or_*}` / `{ds_*}` / `{kimi_*}` families, which expand to empty strings for vendors that don't define them.
+The `{vendor_short}` placeholder always expands to a 3-letter vendor ID (`cld` / `gpt` / `zai` / `opr` / `dsk` / `kmi` / `gem`), so the bar text tells you which vendor is active. Gemini's default format is `{gemini_pro_pct}% · {gemini_pro_reset}` and selects the most-used `gemini-*pro*` model; its tooltip and TUI panel still show every model bucket. Generic `{session_*}` and `{weekly_*}` aliases are available across vendors for scroll-cycle formats.
 
 `signal: 13` lets the scroll-cycle commands refresh the bar instantly (via `SIGRTMIN+13`) instead of waiting for the next 300s interval.
 
@@ -220,7 +228,7 @@ If your Waybar theme puts a tray expander immediately after `custom/aibar`, such
 If you'd rather see them all at once:
 
 ```jsonc
-"modules-right": ["custom/claude", "custom/openai", "custom/openrouter", "custom/zai", "custom/deepseek", "custom/kimi"],
+"modules-right": ["custom/claude", "custom/openai", "custom/openrouter", "custom/zai", "custom/deepseek", "custom/kimi", "custom/gemini"],
 
 "custom/claude": {
     "exec": "ai-usagebar --vendor anthropic --icon '󰚩'",
@@ -257,6 +265,12 @@ If you'd rather see them all at once:
     "exec": "ai-usagebar --vendor kimi --icon '󰚩'",
     "return-type": "json",
     "interval": 600,
+    "tooltip": true
+},
+"custom/gemini": {
+    "exec": "ai-usagebar --vendor gemini --icon '󰊭'",
+    "return-type": "json",
+    "interval": 300,
     "tooltip": true
 }
 ```
