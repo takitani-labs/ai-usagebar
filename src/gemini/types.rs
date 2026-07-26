@@ -41,16 +41,16 @@ struct QuotaBucket {
 }
 
 impl LoadCodeAssistResponse {
-    pub fn tier_and_project(self) -> Result<(String, String)> {
+    /// The tier is required. The Cloud AI Companion project is not: quota is
+    /// only scoped to it as a fallback (see `fetch::fetch_live`), so accounts
+    /// that report no project are still usable.
+    pub fn tier_and_project(self) -> Result<(String, Option<String>)> {
         let tier = self
             .current_tier
             .and_then(|tier| tier.id)
             .filter(|id| !id.is_empty())
             .ok_or_else(|| AppError::Schema("gemini: missing currentTier.id".into()))?;
-        let project = self
-            .project
-            .filter(|project| !project.is_empty())
-            .ok_or_else(|| AppError::Schema("gemini: missing cloudaicompanionProject".into()))?;
+        let project = self.project.filter(|project| !project.is_empty());
         Ok((tier, project))
     }
 }
@@ -142,7 +142,17 @@ mod tests {
         .unwrap();
         assert_eq!(
             response.tier_and_project().unwrap(),
-            ("standard-tier".into(), "project-123".into())
+            ("standard-tier".into(), Some("project-123".into()))
+        );
+    }
+
+    #[test]
+    fn load_response_without_a_project_still_yields_the_tier() {
+        let response: LoadCodeAssistResponse =
+            serde_json::from_str(r#"{"currentTier":{"id":"free-tier"}}"#).unwrap();
+        assert_eq!(
+            response.tier_and_project().unwrap(),
+            ("free-tier".into(), None)
         );
     }
 }

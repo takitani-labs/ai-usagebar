@@ -141,16 +141,37 @@ async fn fetch_live(
         .map_err(|e| AppError::Schema(format!("gemini loadCodeAssist response: {e}")))?;
     let (tier, project) = load.tier_and_project()?;
 
-    let quota_bytes = post_json(
-        client,
-        &endpoints.retrieve_user_quota,
-        access_token,
-        &serde_json::json!({"project": project}),
-    )
-    .await?;
-    let quota: QuotaResponse = serde_json::from_slice(&quota_bytes)
+    // Ask for the subscription pool first, by leaving `project` out. That is
+    // the pool a personal login spends (Google One AI Pro, free tier): scoping
+    // the call to `cloudaicompanionProject` answers for the Cloud project's own
+    // pool, which stays at a pristine 100% remaining no matter how much of the
+    // subscription was used. Buckets only exist there once a model is called,
+    // so an empty answer means either no usage today or a licensed account
+    // whose quota really is project-scoped — fall back to the project then.
+    let snapshot = fetch_quota(client, endpoints, access_token, &tier, None).await?;
+    match project {
+        Some(project) if snapshot.buckets.is_empty() => {
+            fetch_quota(client, endpoints, access_token, &tier, Some(&project)).await
+        }
+        _ => Ok(snapshot),
+    }
+}
+
+async fn fetch_quota(
+    client: &reqwest::Client,
+    endpoints: &Endpoints,
+    access_token: &str,
+    tier: &str,
+    project: Option<&str>,
+) -> Result<GeminiSnapshot> {
+    let body = match project {
+        Some(project) => serde_json::json!({"project": project}),
+        None => serde_json::json!({}),
+    };
+    let bytes = post_json(client, &endpoints.retrieve_user_quota, access_token, &body).await?;
+    let quota: QuotaResponse = serde_json::from_slice(&bytes)
         .map_err(|e| AppError::Schema(format!("gemini retrieveUserQuota response: {e}")))?;
-    quota.into_snapshot(tier)
+    quota.into_snapshot(tier.to_string())
 }
 
 async fn post_json(
@@ -287,10 +308,8 @@ mod tests {
         (dir, cache)
     }
 
-    #[tokio::test]
-    async fn live_flow_loads_project_then_all_request_buckets() {
-        let mut server = mockito::Server::new_async().await;
-        let load = server
+    fn load_mock(server: &mut mockito::ServerGuard) -> mockito::Mock {
+        server
             .mock("POST", "/v1internal:loadCodeAssist")
             .match_header("authorization", "Bearer test-at")
             .match_body(mockito::Matcher::PartialJson(serde_json::json!({
@@ -300,32 +319,59 @@ mod tests {
             .with_body(
                 r#"{"currentTier":{"id":"standard-tier"},"cloudaicompanionProject":"project-123"}"#,
             )
-            .create_async()
-            .await;
-        let quota = server
+    }
+
+    fn quota_mock(
+        server: &mut mockito::ServerGuard,
+        body: serde_json::Value,
+        response: &str,
+    ) -> mockito::Mock {
+        server
             .mock("POST", "/v1internal:retrieveUserQuota")
             .match_header("authorization", "Bearer test-at")
-            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
-                "project": "project-123"
-            })))
+            .match_body(mockito::Matcher::Json(body))
             .with_status(200)
-            .with_body(r#"{"buckets":[{"tokenType":"REQUESTS","modelId":"gemini-2.5-pro","remainingFraction":0.4,"resetTime":"2026-07-22T13:20:53Z"}]}"#)
-            .create_async()
-            .await;
+            .with_body(response)
+    }
+
+    fn test_endpoints(server: &mockito::ServerGuard) -> Endpoints {
+        Endpoints {
+            token: format!("{}/token", server.url()),
+            load_code_assist: format!("{}/v1internal:loadCodeAssist", server.url()),
+            retrieve_user_quota: format!("{}/v1internal:retrieveUserQuota", server.url()),
+        }
+    }
+
+    #[tokio::test]
+    async fn live_flow_reads_the_subscription_pool_not_the_project() {
+        let mut server = mockito::Server::new_async().await;
+        let load = load_mock(&mut server).create_async().await;
+        let subscription = quota_mock(
+            &mut server,
+            serde_json::json!({}),
+            r#"{"buckets":[{"tokenType":"REQUESTS","modelId":"gemini-2.5-pro","remainingFraction":0.4,"resetTime":"2026-07-22T13:20:53Z"}]}"#,
+        )
+        .create_async()
+        .await;
+        // The project pool answers 100% remaining for a subscription account,
+        // so it must not be consulted while the subscription pool has buckets.
+        let project = quota_mock(
+            &mut server,
+            serde_json::json!({"project": "project-123"}),
+            r#"{"buckets":[{"tokenType":"REQUESTS","modelId":"gemini-2.5-pro","remainingFraction":1,"resetTime":"2026-07-22T13:20:53Z"}]}"#,
+        )
+        .expect(0)
+        .create_async()
+        .await;
 
         // Well beyond the eager-refresh margin so no token refresh is attempted.
         let creds = credentials(Utc::now().timestamp_millis() + 10 * 60 * 1000);
         let (_dir, cache) = cache_fixture();
-        let endpoints = Endpoints {
-            token: format!("{}/token", server.url()),
-            load_code_assist: format!("{}/v1internal:loadCodeAssist", server.url()),
-            retrieve_user_quota: format!("{}/v1internal:retrieveUserQuota", server.url()),
-        };
         let outcome = fetch_snapshot(
             &reqwest::Client::new(),
             creds.path(),
             &cache,
-            &endpoints,
+            &test_endpoints(&server),
             Duration::ZERO,
             None,
         )
@@ -337,7 +383,43 @@ mod tests {
         assert_eq!(outcome.snapshot.buckets[0].window.utilization_pct, 60);
         assert!(!outcome.stale);
         load.assert_async().await;
-        quota.assert_async().await;
+        subscription.assert_async().await;
+        project.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn empty_subscription_pool_falls_back_to_the_project() {
+        let mut server = mockito::Server::new_async().await;
+        let load = load_mock(&mut server).create_async().await;
+        let subscription = quota_mock(&mut server, serde_json::json!({}), r#"{"buckets":[]}"#)
+            .create_async()
+            .await;
+        let project = quota_mock(
+            &mut server,
+            serde_json::json!({"project": "project-123"}),
+            r#"{"buckets":[{"tokenType":"REQUESTS","modelId":"gemini-2.5-pro","remainingFraction":0.25,"resetTime":"2026-07-22T13:20:53Z"}]}"#,
+        )
+        .create_async()
+        .await;
+
+        let creds = credentials(Utc::now().timestamp_millis() + 10 * 60 * 1000);
+        let (_dir, cache) = cache_fixture();
+        let outcome = fetch_snapshot(
+            &reqwest::Client::new(),
+            creds.path(),
+            &cache,
+            &test_endpoints(&server),
+            Duration::ZERO,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.snapshot.buckets.len(), 1);
+        assert_eq!(outcome.snapshot.buckets[0].window.utilization_pct, 75);
+        load.assert_async().await;
+        subscription.assert_async().await;
+        project.assert_async().await;
     }
 
     #[tokio::test]
