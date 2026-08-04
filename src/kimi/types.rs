@@ -76,7 +76,11 @@ impl NumericOrString {
 
 impl UsagesResponse {
     pub fn into_snapshot(self) -> Result<KimiSnapshot> {
-        let plan = self.user.and_then(|u| u.membership).and_then(|m| m.level);
+        let plan = self
+            .user
+            .and_then(|u| u.membership)
+            .and_then(|m| m.level)
+            .map(|level| plan_label(&level));
 
         let usage = self
             .usage
@@ -114,6 +118,31 @@ impl UsagesResponse {
             window_remaining,
             window_reset_at: window_reset,
         })
+    }
+}
+
+/// Kimi reports the membership as an internal enum (`LEVEL_ADVANCED`) and never
+/// the commercial tier name, so translate the levels confirmed against a live
+/// account and humanize the rest: an unseen tier reads as "Intermediate"
+/// instead of shouting the enum next to "Max 20x" and "ChatGPT Pro".
+fn plan_label(level: &str) -> String {
+    match level {
+        // Confirmed: an account answering LEVEL_ADVANCED shows Allegro as the
+        // current plan on kimi.com/membership/pricing.
+        "LEVEL_ADVANCED" => "Allegro".into(),
+        other => humanize_level(other),
+    }
+}
+
+fn humanize_level(level: &str) -> String {
+    let name = level
+        .strip_prefix("LEVEL_")
+        .unwrap_or(level)
+        .replace('_', " ");
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().to_string() + &chars.as_str().to_lowercase(),
+        None => level.to_string(),
     }
 }
 
@@ -186,7 +215,7 @@ mod tests {
             .unwrap()
             .into_snapshot()
             .unwrap();
-        assert_eq!(snap.plan, Some("LEVEL_INTERMEDIATE".into()));
+        assert_eq!(snap.plan, Some("Intermediate".into()));
         assert_eq!(snap.weekly_limit, 100);
         assert_eq!(snap.weekly_used, 26);
         assert_eq!(snap.weekly_remaining, 74);
@@ -215,13 +244,22 @@ mod tests {
             .unwrap()
             .into_snapshot()
             .unwrap();
-        assert_eq!(snap.plan, Some("LEVEL_ADVANCED".into()));
+        assert_eq!(snap.plan, Some("Allegro".into()));
         assert_eq!(snap.weekly_limit, 500);
         assert_eq!(snap.weekly_used, 123);
         assert_eq!(snap.weekly_remaining, 377);
         assert_eq!(snap.window_limit, 200);
         assert_eq!(snap.window_used, 50);
         assert_eq!(snap.window_remaining, 150);
+    }
+
+    #[test]
+    fn labels_confirmed_levels_and_humanizes_the_rest() {
+        assert_eq!(plan_label("LEVEL_ADVANCED"), "Allegro");
+        assert_eq!(plan_label("LEVEL_INTERMEDIATE"), "Intermediate");
+        // A tier Kimi adds later must not leak the raw enum into the widget.
+        assert_eq!(plan_label("LEVEL_SUPER_ADVANCED"), "Super advanced");
+        assert_eq!(plan_label("weird"), "Weird");
     }
 
     #[test]

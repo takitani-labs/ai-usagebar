@@ -266,7 +266,7 @@ mod tests {
         .await
         .unwrap();
         m.assert_async().await;
-        assert_eq!(out.snapshot.plan, Some("LEVEL_INTERMEDIATE".into()));
+        assert_eq!(out.snapshot.plan, Some("Intermediate".into()));
         assert_eq!(out.snapshot.weekly_limit, 100);
         assert_eq!(out.snapshot.weekly_used, 26);
         assert_eq!(out.snapshot.weekly_remaining, 74);
