@@ -69,3 +69,11 @@ enabled = true
 # Grab the value from your installed gemini-cli, e.g.:
 #   grep -rhoE 'GOCSPX-[A-Za-z0-9_-]+' "$(npm root -g)/@google/gemini-cli" | head -1
 # oauth_client_secret = "GOCSPX-..."
+
+[grok]
+enabled = true
+# Read-only Grok Build OAuth state. Leave commented to use ~/.grok/auth.json.
+# The Grok CLI refreshes that token itself (~6h); ai-usagebar never writes to
+# the file, so an expired token shows a "run `grok` to refresh" state instead
+# of live numbers.
+# auth_path = "/home/you/.grok/auth.json"

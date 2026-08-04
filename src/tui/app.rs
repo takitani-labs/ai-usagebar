@@ -348,6 +348,19 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
             .await?;
             Ok(outcome.into())
         }
+        VendorId::Grok => {
+            let cache = crate::cache::Cache::for_vendor("grok")?;
+            let creds_path = config
+                .grok
+                .auth_path
+                .clone()
+                .unwrap_or_else(|| crate::grok::creds::default_path().unwrap_or_default());
+            let endpoints = crate::grok::fetch::Endpoints::default();
+            let outcome =
+                crate::grok::fetch_snapshot(client, &creds_path, &cache, &endpoints, DEFAULT_TTL)
+                    .await?;
+            Ok(outcome.into())
+        }
     }
 }
 
@@ -390,6 +403,7 @@ mod tests {
         config.zai.enabled = false;
         config.openrouter.enabled = false;
         config.gemini.enabled = false;
+        config.grok.enabled = false;
         config.anthropic.accounts = labels
             .iter()
             .map(|l| crate::config::AnthropicAccount {

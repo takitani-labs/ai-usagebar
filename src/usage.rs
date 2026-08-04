@@ -158,6 +158,34 @@ impl KimiSnapshot {
     }
 }
 
+/// Grok Build — one monthly credit pool that resets with the billing period.
+/// xAI exposes no rolling window and no tier name, so this is the whole story.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GrokSnapshot {
+    pub monthly_limit: f64,
+    pub monthly_used: f64,
+    pub monthly_remaining: f64,
+    /// Pay-as-you-go ceiling on top of the included credits (0 = off).
+    pub on_demand_cap: f64,
+    pub period_start: Option<DateTime<Utc>>,
+    pub period_end: Option<DateTime<Utc>>,
+}
+
+impl Eq for GrokSnapshot {}
+
+impl GrokSnapshot {
+    /// Percentage of the monthly credit pool consumed (0..=100).
+    pub fn monthly_pct(&self) -> i32 {
+        if self.monthly_limit <= 0.0 {
+            0
+        } else {
+            ((self.monthly_used / self.monthly_limit) * 100.0)
+                .round()
+                .clamp(0.0, 100.0) as i32
+        }
+    }
+}
+
 /// Gemini Code Assist — one daily request-quota bucket per model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeminiSnapshot {
@@ -182,6 +210,7 @@ pub enum VendorSnapshot {
     Deepseek(DeepseekSnapshot),
     Kimi(KimiSnapshot),
     Gemini(GeminiSnapshot),
+    Grok(GrokSnapshot),
 }
 
 /// OpenAI Codex OAuth — mirrors Anthropic's two-window + extras pattern.

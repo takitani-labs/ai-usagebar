@@ -18,6 +18,7 @@ pub mod deepseek;
 pub mod error;
 pub mod format;
 pub mod gemini;
+pub mod grok;
 pub mod kimi;
 pub mod openai;
 pub mod openrouter;

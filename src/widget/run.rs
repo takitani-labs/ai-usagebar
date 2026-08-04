@@ -15,6 +15,7 @@ use crate::config::Config;
 use crate::deepseek;
 use crate::error::{AppError, Result};
 use crate::gemini;
+use crate::grok;
 use crate::kimi;
 use crate::openai;
 use crate::openrouter;
@@ -134,6 +135,7 @@ async fn build_output(cli: &Cli) -> Result<WaybarOutput> {
         Vendor::Deepseek => deepseek_output(cli, &config).await,
         Vendor::Kimi => kimi_output(cli, &config).await,
         Vendor::Gemini => gemini_output(cli, &config).await,
+        Vendor::Grok => grok_output(cli, &config).await,
     }
 }
 
@@ -296,6 +298,34 @@ async fn kimi_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
     let vendor_outcome: VendorOutcome = outcome.into();
     let opts = RenderOpts::from_cli(cli);
     Ok(kimi::vendor::render(
+        &vendor_outcome,
+        &snap,
+        &theme,
+        &opts,
+        chrono::Utc::now(),
+    ))
+}
+
+async fn grok_output(cli: &Cli, config: &Config) -> Result<WaybarOutput> {
+    let client = http_client()?;
+    let cache = vendor_cache(cli, "grok")?;
+    let creds_path = match config.grok.auth_path.as_deref() {
+        Some(p) => p.to_path_buf(),
+        None => grok::creds::default_path()?,
+    };
+    let endpoints = grok::fetch::Endpoints::default();
+    let outcome =
+        match grok::fetch_snapshot(&client, &creds_path, &cache, &endpoints, DEFAULT_TTL).await {
+            Ok(o) => o,
+            Err(e) if e.is_transient() => return Ok(WaybarOutput::loading(cli.icon.as_deref())),
+            Err(e) => return Err(e),
+        };
+
+    let theme = theme_from_cli(cli);
+    let snap = outcome.snapshot.clone();
+    let vendor_outcome: VendorOutcome = outcome.into();
+    let opts = RenderOpts::from_cli(cli);
+    Ok(grok::vendor::render(
         &vendor_outcome,
         &snap,
         &theme,

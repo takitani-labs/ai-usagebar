@@ -36,6 +36,7 @@ pub struct Config {
     pub deepseek: DeepseekConfig,
     pub kimi: KimiConfig,
     pub gemini: GeminiConfig,
+    pub grok: GrokConfig,
 }
 
 /// UI / dispatch preferences. Currently just `primary` — which vendor the
@@ -265,6 +266,25 @@ impl Default for GeminiConfig {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct GrokConfig {
+    pub enabled: bool,
+    /// Override Grok Build's credentials path (`~/.grok/auth.json`).
+    pub auth_path: Option<PathBuf>,
+}
+
+impl Default for GrokConfig {
+    fn default() -> Self {
+        // Like Gemini: the credentials are a local file the CLI writes, so
+        // there is no API key to configure before the vendor can work.
+        Self {
+            enabled: true,
+            auth_path: None,
+        }
+    }
+}
+
 /// Resolve an API key for a vendor: a valid env-var name wins, then inline
 /// config. Used by Z.AI, OpenRouter, DeepSeek, and Kimi vendors.
 pub fn resolve_api_key(
@@ -336,6 +356,7 @@ impl Config {
             VendorId::Deepseek => self.deepseek.enabled,
             VendorId::Kimi => self.kimi.enabled,
             VendorId::Gemini => self.gemini.enabled,
+            VendorId::Grok => self.grok.enabled,
         }
     }
 
@@ -404,7 +425,9 @@ mod tests {
         assert!(!c.is_enabled(VendorId::Deepseek));
         assert!(!c.is_enabled(VendorId::Kimi));
         assert!(c.is_enabled(VendorId::Gemini));
-        assert_eq!(c.enabled_vendors().len(), 5);
+        // Grok, like Gemini, authenticates from a file its CLI writes.
+        assert!(c.is_enabled(VendorId::Grok));
+        assert_eq!(c.enabled_vendors().len(), 6);
     }
 
     #[test]
@@ -609,7 +632,8 @@ enabled = false
     #[test]
     fn enabled_vendors_preserves_canonical_order() {
         // DeepSeek and Kimi are disabled by default (require explicit API key
-        // config); Gemini uses gemini-cli OAuth and is enabled by default.
+        // config); Gemini and Grok read their CLI's own OAuth file, so they are
+        // enabled by default.
         let c = Config::default();
         assert_eq!(
             c.enabled_vendors(),
@@ -619,6 +643,7 @@ enabled = false
                 VendorId::Zai,
                 VendorId::Openrouter,
                 VendorId::Gemini,
+                VendorId::Grok,
             ]
         );
     }
@@ -677,6 +702,7 @@ enabled = false
                 VendorId::Deepseek,
                 VendorId::Kimi,
                 VendorId::Gemini,
+                VendorId::Grok,
             ]
         );
     }

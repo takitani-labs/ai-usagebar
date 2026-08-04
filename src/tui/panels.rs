@@ -84,6 +84,7 @@ pub fn sections_for(tab: &TabState, now: DateTime<Utc>, pace_tolerance: u32) -> 
                 VendorSnapshot::Deepseek(s) => deepseek_sections(s),
                 VendorSnapshot::Kimi(s) => kimi_sections(s, now, pace_tolerance),
                 VendorSnapshot::Gemini(s) => gemini_sections(s, now, pace_tolerance),
+                VendorSnapshot::Grok(s) => grok_sections(s, now),
             };
             // Inject the (already-absolute) fetched-at instant into the title
             // row, right-aligned. Pre-snapshotted in app::refresh_one so it
@@ -348,6 +349,38 @@ fn kimi_sections(s: &crate::usage::KimiSnapshot, now: DateTime<Utc>, _tol: u32) 
                 s.window_remaining,
                 countdown::format(s.window_reset_at, now)
             ),
+        });
+    }
+
+    v
+}
+
+fn grok_sections(s: &crate::usage::GrokSnapshot, now: DateTime<Utc>) -> Vec<Section> {
+    use crate::grok::vendor::{credits, plan_label};
+
+    let mut v = vec![Section::Title {
+        left: plan_label(s),
+        right: None,
+    }];
+
+    v.push(Section::Spacer);
+    v.push(Section::Metric {
+        label: "Monthly credits".into(),
+        pct: s.monthly_pct().clamp(0, 100) as u16,
+        severity: severity_for(s.monthly_pct()),
+        value_label: format!("{} / {}", credits(s.monthly_used), credits(s.monthly_limit)),
+        footnote: format!(
+            "{} remaining · reset {}",
+            credits(s.monthly_remaining),
+            countdown::format(s.period_end, now)
+        ),
+    });
+
+    if s.on_demand_cap > 0.0 {
+        v.push(Section::Spacer);
+        v.push(Section::Text {
+            label: "On-demand cap".into(),
+            value: credits(s.on_demand_cap),
         });
     }
 

@@ -46,6 +46,7 @@ fn vendor_label(id: VendorId) -> &'static str {
         VendorId::Deepseek => "DeepSeek",
         VendorId::Kimi => "Kimi",
         VendorId::Gemini => "Gemini",
+        VendorId::Grok => "Grok Build",
     }
 }
 
@@ -58,6 +59,7 @@ fn compact_vendor_label(id: VendorId) -> &'static str {
         VendorId::Deepseek => "DeepSeek",
         VendorId::Kimi => "Kimi",
         VendorId::Gemini => "Gemini",
+        VendorId::Grok => "Grok",
     }
 }
 

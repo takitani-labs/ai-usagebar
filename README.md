@@ -1,6 +1,6 @@
 # ai-usagebar
 
-Waybar widget and tabbed TUI for AI plan usage across **Anthropic Claude**, **OpenAI Codex/ChatGPT**, **Z.AI (GLM)**, **OpenRouter**, **DeepSeek**, **Kimi**, and **Gemini Code Assist**.
+Waybar widget and tabbed TUI for AI plan usage across **Anthropic Claude**, **OpenAI Codex/ChatGPT**, **Z.AI (GLM)**, **OpenRouter**, **DeepSeek**, **Kimi**, **Gemini Code Assist**, and **Grok Build**.
 
 This started as a Rust port of [`claudebar`](https://github.com/mryll/claudebar) and stays drop-in compatible with it. It keeps the minimalist Pango-bordered tooltip, Omarchy theme auto-detection, and flock-protected OAuth refresh, then adds six more vendors and a proper testable codebase instead of one long shell script.
 
@@ -84,6 +84,7 @@ Each vendor authenticates a little differently. Anthropic, OpenAI, and Gemini us
 | DeepSeek | API key (`DEEPSEEK_API_KEY` env or `[deepseek] api_key` in config) | Set either. Disabled by default — add `[deepseek] enabled = true` to config. |
 | Kimi | API key (`KIMI_API_KEY` env or `[kimi] api_key` in config) | Set either. Disabled by default — add `[kimi] enabled = true` to config. |
 | Gemini | OAuth, read-only from `~/.gemini/oauth_creds.json` | Run `gemini` once and sign in. Refreshing an expired token needs gemini-cli's public client secret via `GEMINI_OAUTH_CLIENT_SECRET` env or `[gemini] oauth_client_secret` (not shipped here; see `config.example.toml`). Refreshes happen in memory, never written to gemini-cli's file. |
+| Grok | OAuth, read-only from `~/.grok/auth.json` | Run `grok login` once. Grok Build refreshes the token itself (~6h); ai-usagebar never writes to that file, so an expired token shows a "run `grok` to refresh" warning over the last known numbers. |
 
 ### Credential resolution order (for API-key vendors)
 
@@ -97,7 +98,7 @@ For each API-key vendor, ai-usagebar checks in this order:
 
 - If you put inline `api_key` values in config, `chmod 600 ~/.config/ai-usagebar/config.toml`. The default behavior reads only env vars, which is safer when your config might be world-readable.
 - Don't commit your config dir if you check it into dotfiles unless you've redacted `api_key` lines.
-- OAuth credential files (`~/.claude/.credentials.json`, `~/.codex/auth.json`, `~/.gemini/oauth_creds.json`) are managed by their respective CLIs and already chmod-protected.
+- OAuth credential files (`~/.claude/.credentials.json`, `~/.codex/auth.json`, `~/.gemini/oauth_creds.json`, `~/.grok/auth.json`) are managed by their respective CLIs and already chmod-protected.
 
 #### macOS: Anthropic credentials in the Keychain
 
@@ -105,13 +106,13 @@ On macOS, recent Claude Code builds don't write `~/.claude/.credentials.json` �
 
 ## Configuration
 
-`~/.config/ai-usagebar/config.toml` (optional — defaults enable Anthropic, OpenAI, Z.AI, OpenRouter, and Gemini; DeepSeek and Kimi are opt-in). Full example:
+`~/.config/ai-usagebar/config.toml` (optional — defaults enable Anthropic, OpenAI, Z.AI, OpenRouter, Gemini, and Grok; DeepSeek and Kimi are opt-in). Full example:
 
 ```toml
 [ui]
 # Which vendor the widget shows when --vendor is omitted, AND which tab
 # is selected when the TUI opens. Defaults to anthropic when not set.
-# primary = "anthropic"   # anthropic | openai | zai | openrouter | deepseek | kimi | gemini
+# primary = "anthropic"   # anthropic | openai | zai | openrouter | deepseek | kimi | gemini | grok
 
 [anthropic]
 enabled = true
@@ -146,6 +147,10 @@ api_key_env = "KIMI_API_KEY"
 enabled = true
 # oauth_credentials_path = "/home/you/.gemini/oauth_creds.json"
 # oauth_client_secret = "GOCSPX-..."   # or GEMINI_OAUTH_CLIENT_SECRET env; see config.example.toml
+
+[grok]
+enabled = true
+# auth_path = "/home/you/.grok/auth.json"
 ```
 
 ## Quick start
@@ -159,6 +164,7 @@ ai-usagebar --vendor openrouter
 ai-usagebar --vendor deepseek
 ai-usagebar --vendor kimi
 ai-usagebar --vendor gemini
+ai-usagebar --vendor grok
 
 # Force Waybar JSON (e.g. piping into jq).
 ai-usagebar --json
@@ -188,7 +194,7 @@ The Waybar widget is optional. The TUI is the best way to see every enabled vend
 
 ## Native desktop integrations (v0.13)
 
-The [GNOME Shell extension](gnome-extension/README.md) and [macOS menu bar app](macos/README.md) support selectors for **Anthropic, OpenAI, Z.AI, OpenRouter, and DeepSeek**. **Kimi and Gemini are widget/TUI-only in v0.13**; do not select them in either native desktop integration yet.
+The [GNOME Shell extension](gnome-extension/README.md) and [macOS menu bar app](macos/README.md) support selectors for **Anthropic, OpenAI, Z.AI, OpenRouter, and DeepSeek**. **Kimi, Gemini, and Grok are widget/TUI-only in v0.13**; do not select them in either native desktop integration yet.
 
 ## Waybar config
 
@@ -211,7 +217,7 @@ Use one bar item and scroll through your vendors. The TUI on-click still shows t
 }
 ```
 
-The `{vendor_short}` placeholder always expands to a 3-letter vendor ID (`cld` / `gpt` / `zai` / `opr` / `dsk` / `kmi` / `gem`), so the bar text tells you which vendor is active. Gemini's default format is `{gemini_pro_pct}% · {gemini_pro_reset}` and selects the most-used `gemini-*pro*` model; its tooltip and TUI panel still show every model bucket. Generic `{session_*}` and `{weekly_*}` aliases are available across vendors for scroll-cycle formats.
+The `{vendor_short}` placeholder always expands to a 3-letter vendor ID (`cld` / `gpt` / `zai` / `opr` / `dsk` / `kmi` / `gem` / `grk`), so the bar text tells you which vendor is active. Gemini's default format is `{gemini_pro_pct}% · {gemini_pro_reset}` and selects the most-used `gemini-*pro*` model; its tooltip and TUI panel still show every model bucket. Generic `{session_*}` and `{weekly_*}` aliases are available across vendors for scroll-cycle formats.
 
 `signal: 13` lets the scroll-cycle commands refresh the bar instantly (via `SIGRTMIN+13`) instead of waiting for the next 300s interval.
 
