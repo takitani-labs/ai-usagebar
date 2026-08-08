@@ -1,3 +1,4 @@
+pub mod block;
 pub mod creds;
 pub mod fetch;
 pub mod types;

@@ -23,6 +23,11 @@ pub const SCHEMA_DRIFT_MESSAGE: &str = "Grok API schema drift";
 /// Stored when the CLI's cached token has lapsed. Only Grok Build itself can
 /// refresh it, so the fix is to run it, not to retry harder.
 pub const EXPIRED_TOKEN_MESSAGE: &str = "Grok token expired — run `grok` to refresh it";
+/// Stored when the CLI's log shows the last turn was refused for spending.
+/// This is NOT the pool running dry: the pool can sit at 36% and still refuse,
+/// because a refused request never spends and the counter stops moving.
+pub const SPENDING_BLOCK_MESSAGE: &str =
+    "Grok is refusing turns: spending limit reached, add credits or upgrade";
 
 #[derive(Debug, Clone)]
 pub struct Endpoints {
@@ -46,6 +51,26 @@ pub struct FetchOutcome {
 }
 
 pub async fn fetch_snapshot(
+    client: &reqwest::Client,
+    creds_path: &Path,
+    cache: &Cache,
+    endpoints: &Endpoints,
+    cache_ttl: Duration,
+) -> Result<FetchOutcome> {
+    let mut outcome = fetch_pool(client, creds_path, cache, endpoints, cache_ttl).await?;
+
+    // A live refusal outranks whatever diagnostic the cache carried: it is the
+    // reason the pool stopped moving, and it applies to the cached path too,
+    // which would otherwise stay silent for a whole TTL.
+    if let Some(path) = super::block::default_log_path()
+        && super::block::active(&path, outcome.snapshot.period_start).is_some()
+    {
+        outcome.last_error = Some((403, SPENDING_BLOCK_MESSAGE.to_string()));
+    }
+    Ok(outcome)
+}
+
+async fn fetch_pool(
     client: &reqwest::Client,
     creds_path: &Path,
     cache: &Cache,

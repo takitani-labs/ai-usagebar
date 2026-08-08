@@ -14,13 +14,19 @@ use crate::usage::GrokSnapshot;
 use crate::vendor::{RenderOpts, VendorOutcome};
 use crate::waybar::{Class, WaybarOutput};
 
-use super::fetch::{EXPIRED_TOKEN_MESSAGE, FetchOutcome, SCHEMA_DRIFT_MESSAGE};
+use super::fetch::{
+    EXPIRED_TOKEN_MESSAGE, FetchOutcome, SCHEMA_DRIFT_MESSAGE, SPENDING_BLOCK_MESSAGE,
+};
 
 /// Presentation classification for the legacy `(u16, String)` cached
 /// diagnostic. Code zero has never meant HTTP, so the stable markers let the
 /// tooltip separate schema drift and a lapsed token from other local failures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WarningKind {
+    /// The CLI's log shows turns being refused for spending. Checked before
+    /// the generic HTTP arm: it carries 403 to say what upstream answered, but
+    /// it is a standing state, not one failed fetch.
+    SpendingBlock,
     Http(u16),
     SchemaDrift,
     ExpiredToken,
@@ -28,7 +34,9 @@ pub enum WarningKind {
 }
 
 pub fn warning_kind(code: u16, message: &str) -> WarningKind {
-    if code != 0 {
+    if message == SPENDING_BLOCK_MESSAGE {
+        WarningKind::SpendingBlock
+    } else if code != 0 {
         WarningKind::Http(code)
     } else if message == SCHEMA_DRIFT_MESSAGE {
         WarningKind::SchemaDrift
@@ -37,6 +45,14 @@ pub fn warning_kind(code: u16, message: &str) -> WarningKind {
     } else {
         WarningKind::Other
     }
+}
+
+/// Whether this outcome carries a standing spending refusal.
+pub fn is_blocked(outcome: &VendorOutcome) -> bool {
+    outcome
+        .last_error
+        .as_ref()
+        .is_some_and(|(code, msg)| warning_kind(*code, msg) == WarningKind::SpendingBlock)
 }
 
 pub const DEFAULT_FORMAT: &str = "{grok_monthly_pct}%";
@@ -97,12 +113,20 @@ pub fn render(
     opts: &RenderOpts,
     now: DateTime<Utc>,
 ) -> WaybarOutput {
-    let class = Class::from(severity(snap));
+    // A refusal outranks the pool: 36% of the credits left means nothing while
+    // every turn comes back 403, so the row goes critical regardless of pace.
+    let blocked = is_blocked(outcome);
+    let class = if blocked {
+        Class::Critical
+    } else {
+        Class::from(severity(snap))
+    };
     let format = opts
         .format
         .clone()
         .unwrap_or_else(|| DEFAULT_FORMAT.to_string());
-    let values = build_placeholders(snap, now);
+    let mut values = build_placeholders(snap, now);
+    values.insert("grok_blocked", if blocked { "blocked" } else { "" }.into());
     // User formats are Pango markup after Waybar renders them. Escape API
     // strings there, while retaining raw values for the default tooltip (which
     // escapes exactly once at its markup insertion point).
@@ -194,6 +218,9 @@ fn render_tooltip(
 
     if let Some((code, msg)) = outcome.last_error.as_ref() {
         let (label, icon, ecolor) = match warning_kind(*code, msg) {
+            WarningKind::SpendingBlock => {
+                ("Grok spending limit".to_string(), "󰅚", theme.red.as_str())
+            }
             WarningKind::SchemaDrift => {
                 ("Grok API schema drift".to_string(), "󰅚", theme.red.as_str())
             }
@@ -323,6 +350,44 @@ mod tests {
         assert!(tip.contains("Grok Build"));
         assert!(tip.contains("1200 / 4000"));
         assert!(tip.contains("2800 remaining"));
+    }
+
+    #[test]
+    fn a_spending_block_turns_the_row_critical_whatever_the_pool_says() {
+        // The case this exists for: 30% of the pool spent, every turn refused.
+        let snap = sample_snap();
+        let mut outcome = sample_outcome(snap.clone());
+        outcome.last_error = Some((403, SPENDING_BLOCK_MESSAGE.to_string()));
+        assert_eq!(severity(&snap), severity_for(30), "pool alone reads calm");
+
+        let out = render(&outcome, &snap, &Theme::default(), &opts(), now());
+        assert_eq!(out.class, Class::Critical);
+        assert!(out.tooltip.contains("Grok spending limit"));
+        assert_eq!(
+            warning_kind(403, SPENDING_BLOCK_MESSAGE),
+            WarningKind::SpendingBlock,
+            "must not fall through to the generic HTTP arm"
+        );
+    }
+
+    #[test]
+    fn the_blocked_placeholder_is_empty_when_nothing_is_refused() {
+        let snap = sample_snap();
+        let mut o = opts();
+        o.format = Some("[{grok_blocked}]".into());
+        let out = render(
+            &sample_outcome(snap.clone()),
+            &snap,
+            &Theme::default(),
+            &o,
+            now(),
+        );
+        assert!(out.text.contains("[]"), "got {}", out.text);
+
+        let mut blocked = sample_outcome(snap.clone());
+        blocked.last_error = Some((403, SPENDING_BLOCK_MESSAGE.to_string()));
+        let out = render(&blocked, &snap, &Theme::default(), &o, now());
+        assert!(out.text.contains("[blocked]"), "got {}", out.text);
     }
 
     #[test]
