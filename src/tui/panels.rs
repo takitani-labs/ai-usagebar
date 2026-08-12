@@ -364,17 +364,33 @@ fn grok_sections(s: &crate::usage::GrokSnapshot, now: DateTime<Utc>) -> Vec<Sect
     }];
 
     v.push(Section::Spacer);
-    v.push(Section::Metric {
-        label: "Monthly credits".into(),
-        pct: s.monthly_pct().clamp(0, 100) as u16,
-        severity: severity_for(s.monthly_pct()),
-        value_label: format!("{} / {}", credits(s.monthly_used), credits(s.monthly_limit)),
-        footnote: format!(
-            "{} remaining · reset {}",
-            credits(s.monthly_remaining),
-            countdown::format(s.period_end, now)
-        ),
-    });
+    match s.monthly_pct() {
+        Some(pct) => v.push(Section::Metric {
+            label: "Monthly credits".into(),
+            pct: pct.clamp(0, 100) as u16,
+            severity: severity_for(pct),
+            value_label: format!("{} / {}", credits(s.monthly_used), credits(s.monthly_limit)),
+            footnote: format!(
+                "{} remaining · reset {}",
+                credits(s.monthly_remaining),
+                countdown::format(s.period_end, now)
+            ),
+        }),
+        // A gauge needs a denominator. Drawing one at 0% would repeat the exact
+        // reading that made this card wrong in the first place.
+        None => v.push(Section::Block {
+            label: "Credits this period".into(),
+            body: vec![
+                format!("{} used · no included allowance", credits(s.monthly_used)),
+                format!("reset {}", countdown::format(s.period_end, now)),
+                match s.has_grok_code_access {
+                    Some(true) => "Grok Code access: active, tier not metered in credits".into(),
+                    Some(false) => "Grok Code access: none".into(),
+                    None => "Grok Code access: unknown".into(),
+                },
+            ],
+        }),
+    }
 
     if s.on_demand_cap > 0.0 {
         v.push(Section::Spacer);

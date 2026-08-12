@@ -158,8 +158,9 @@ impl KimiSnapshot {
     }
 }
 
-/// Grok Build — one monthly credit pool that resets with the billing period.
-/// xAI exposes no rolling window and no tier name, so this is the whole story.
+/// Grok Build — a monthly credit pool that resets with the billing period, on
+/// the tiers that have one. xAI exposes no rolling window and no tier name, so
+/// the pool plus the entitlement flag is the whole story.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GrokSnapshot {
     pub monthly_limit: f64,
@@ -169,20 +170,36 @@ pub struct GrokSnapshot {
     pub on_demand_cap: f64,
     pub period_start: Option<DateTime<Utc>>,
     pub period_end: Option<DateTime<Utc>>,
+    /// `hasGrokCodeAccess` from `/v1/user`; `None` when that call did not
+    /// answer. Without it there is no way to tell a lapsed subscription from a
+    /// live one that simply is not metered in credits, because `/v1/billing`
+    /// reports the same empty pool for both.
+    pub has_grok_code_access: Option<bool>,
 }
 
 impl Eq for GrokSnapshot {}
 
 impl GrokSnapshot {
-    /// Percentage of the monthly credit pool consumed (0..=100).
-    pub fn monthly_pct(&self) -> i32 {
-        if self.monthly_limit <= 0.0 {
-            0
-        } else {
+    /// Percentage of the monthly credit pool consumed (0..=100), or `None` when
+    /// the account has no pool to measure against.
+    ///
+    /// This returned 0 for an absent pool until 2026-08-12, which made "xAI
+    /// reports no allowance" render identically to "you have spent nothing".
+    /// Callers act on the second reading: the row goes green and calm while the
+    /// counter is in fact frozen. Observed live on a tier-7 account answering
+    /// `monthlyLimit: 0` with `used` stuck at 224 across 75 successful turns, so
+    /// this is a real state to carry, not a guard against an impossible divide.
+    pub fn monthly_pct(&self) -> Option<i32> {
+        self.has_pool().then(|| {
             ((self.monthly_used / self.monthly_limit) * 100.0)
                 .round()
                 .clamp(0.0, 100.0) as i32
-        }
+        })
+    }
+
+    /// Whether xAI reports a credit pool for this account at all.
+    pub fn has_pool(&self) -> bool {
+        self.monthly_limit > 0.0
     }
 }
 

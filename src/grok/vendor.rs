@@ -56,6 +56,10 @@ pub fn is_blocked(outcome: &VendorOutcome) -> bool {
 }
 
 pub const DEFAULT_FORMAT: &str = "{grok_monthly_pct}%";
+/// A percentage needs a denominator. Accounts whose tier is not metered in
+/// credits have none, so the bar falls back to the one number still moving:
+/// what was spent this billing period.
+pub const DEFAULT_FORMAT_NO_POOL: &str = "{grok_monthly_used} credits";
 
 /// Credits are billed fractionally but almost always land on whole numbers;
 /// print them the way the Grok Build UI does instead of as `4000.0`.
@@ -70,8 +74,20 @@ pub fn credits(value: f64) -> String {
 /// xAI publishes no tier name anywhere in the API (the JWT carries an opaque
 /// `tier: N`), so the monthly allowance stands in for the plan label: it is the
 /// number that actually differs between subscriptions.
+///
+/// Tiers without a pool have no such number, and "0 credits" would read as an
+/// allowance spent down to nothing rather than one that never existed. Those
+/// fall back to the entitlement, which is the only other thing xAI will say
+/// about the account.
 pub fn plan_label(snap: &GrokSnapshot) -> String {
-    format!("{} credits", credits(snap.monthly_limit))
+    if snap.has_pool() {
+        return format!("{} credits", credits(snap.monthly_limit));
+    }
+    match snap.has_grok_code_access {
+        Some(true) => "Grok Code, no pool".to_string(),
+        Some(false) => "no Grok Code access".to_string(),
+        None => "no credit pool".to_string(),
+    }
 }
 
 pub fn build_placeholders(
@@ -79,7 +95,13 @@ pub fn build_placeholders(
     now: DateTime<Utc>,
 ) -> HashMap<&'static str, String> {
     let plan = plan_label(snap);
-    let monthly_pct = snap.monthly_pct();
+    // An absent pool yields an empty percentage rather than "0": a format that
+    // asks for one on an unmetered account should come out visibly blank, not
+    // quietly wrong.
+    let monthly_pct = snap
+        .monthly_pct()
+        .map(|p| p.to_string())
+        .unwrap_or_default();
     let monthly_reset = countdown::format(snap.period_end, now);
     placeholders(vec![
         ("icon", "󰚩".to_string()),
@@ -87,23 +109,46 @@ pub fn build_placeholders(
         // Cross-vendor aliases. Grok has no rolling window, and reporting an
         // absent window as 0% would read as "nothing used in the last 5h".
         ("plan", plan.clone()),
-        ("weekly_pct", monthly_pct.to_string()),
+        ("weekly_pct", monthly_pct.clone()),
         ("weekly_reset", monthly_reset.clone()),
         ("session_pct", String::new()),
         ("session_reset", String::new()),
         // Grok-specific placeholders.
         ("grok_plan", plan),
-        ("grok_monthly_pct", monthly_pct.to_string()),
+        ("grok_monthly_pct", monthly_pct),
         ("grok_monthly_used", credits(snap.monthly_used)),
         ("grok_monthly_limit", credits(snap.monthly_limit)),
         ("grok_monthly_remaining", credits(snap.monthly_remaining)),
         ("grok_monthly_reset", monthly_reset),
         ("grok_on_demand_cap", credits(snap.on_demand_cap)),
+        // Markers, in the shape of {grok_blocked}: empty unless they apply, so
+        // a consumer can branch on them without parsing prose.
+        (
+            "grok_nopool",
+            if snap.has_pool() { "" } else { "nopool" }.to_string(),
+        ),
+        (
+            "grok_access",
+            match snap.has_grok_code_access {
+                Some(true) => "yes",
+                Some(false) => "no",
+                None => "",
+            }
+            .to_string(),
+        ),
     ])
 }
 
 pub fn severity(snap: &GrokSnapshot) -> PaceSeverity {
-    severity_for(snap.monthly_pct())
+    match snap.monthly_pct() {
+        Some(pct) => severity_for(pct),
+        // Nothing to pace against. This must not fall to Low: Low is the green
+        // that reported calm headroom for two days while the counter sat frozen
+        // and the pool read zero. An entitlement xAI actively denies is worth
+        // more than a warning, since no amount of waiting fixes it.
+        None if snap.has_grok_code_access == Some(false) => PaceSeverity::Critical,
+        None => PaceSeverity::Mid,
+    }
 }
 
 pub fn render(
@@ -121,10 +166,14 @@ pub fn render(
     } else {
         Class::from(severity(snap))
     };
-    let format = opts
-        .format
-        .clone()
-        .unwrap_or_else(|| DEFAULT_FORMAT.to_string());
+    let format = opts.format.clone().unwrap_or_else(|| {
+        if snap.has_pool() {
+            DEFAULT_FORMAT
+        } else {
+            DEFAULT_FORMAT_NO_POOL
+        }
+        .to_string()
+    });
     let mut values = build_placeholders(snap, now);
     values.insert("grok_blocked", if blocked { "blocked" } else { "" }.into());
     // User formats are Pango markup after Waybar renders them. Escape API
@@ -172,8 +221,7 @@ fn render_tooltip(
     let dim = &theme.dim;
     let fg = &theme.fg;
 
-    let monthly_pct = snap.monthly_pct();
-    let monthly_color = severity_color(severity_for(monthly_pct), theme);
+    let monthly_color = severity_color(severity(snap), theme);
 
     let mut lines: Vec<TooltipLine> = Vec::new();
     lines.push(TooltipLine::Center(format!(
@@ -191,19 +239,62 @@ fn render_tooltip(
     )));
 
     lines.push(TooltipLine::Body("".into()));
-    lines.push(TooltipLine::Body(format!(
-        " <span foreground='{fg}'>  󰅄  Monthly credits</span>"
-    )));
-    lines.push(TooltipLine::Body(format!(
-        "   <span font_weight='bold' foreground='{monthly_color}'>{used} / {limit}</span>  ({monthly_pct}%)",
-        used = credits(snap.monthly_used),
-        limit = credits(snap.monthly_limit)
-    )));
-    lines.push(TooltipLine::Body(format!(
-        " <span foreground='{dim}'>     {remaining} remaining · reset {reset}</span>",
-        remaining = credits(snap.monthly_remaining),
-        reset = escape(&countdown::format(snap.period_end, now))
-    )));
+    let reset = escape(&countdown::format(snap.period_end, now));
+    match snap.monthly_pct() {
+        Some(monthly_pct) => {
+            lines.push(TooltipLine::Body(format!(
+                " <span foreground='{fg}'>  󰅄  Monthly credits</span>"
+            )));
+            lines.push(TooltipLine::Body(format!(
+                "   <span font_weight='bold' foreground='{monthly_color}'>{used} / {limit}</span>  ({monthly_pct}%)",
+                used = credits(snap.monthly_used),
+                limit = credits(snap.monthly_limit)
+            )));
+            lines.push(TooltipLine::Body(format!(
+                " <span foreground='{dim}'>     {remaining} remaining · reset {reset}</span>",
+                remaining = credits(snap.monthly_remaining),
+            )));
+        }
+        // No denominator: report the spend and say plainly that there is
+        // nothing to measure it against, rather than implying a full tank.
+        None => {
+            lines.push(TooltipLine::Body(format!(
+                " <span foreground='{fg}'>  󰅄  Credits this period</span>"
+            )));
+            lines.push(TooltipLine::Body(format!(
+                "   <span font_weight='bold' foreground='{monthly_color}'>{used} used</span>",
+                used = credits(snap.monthly_used),
+            )));
+            lines.push(TooltipLine::Body(format!(
+                " <span foreground='{dim}'>     no included allowance · reset {reset}</span>"
+            )));
+
+            let (icon, ecolor, detail) = match snap.has_grok_code_access {
+                Some(true) => (
+                    "󰀪",
+                    theme.orange.as_str(),
+                    "active · this tier is not metered in credits",
+                ),
+                Some(false) => (
+                    "󰅚",
+                    theme.red.as_str(),
+                    "none · the account cannot run Grok Code",
+                ),
+                None => (
+                    "󰀪",
+                    theme.orange.as_str(),
+                    "unknown · /v1/user did not answer",
+                ),
+            };
+            lines.push(TooltipLine::Body("".into()));
+            lines.push(TooltipLine::Body(format!(
+                " <span foreground='{ecolor}'>  {icon}  Grok Code access</span>"
+            )));
+            lines.push(TooltipLine::Body(format!(
+                " <span foreground='{dim}'>     {detail}</span>"
+            )));
+        }
+    }
 
     if snap.on_demand_cap > 0.0 {
         lines.push(TooltipLine::Body("".into()));
@@ -284,6 +375,7 @@ mod tests {
             on_demand_cap: 0.0,
             period_start: Some(Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).unwrap()),
             period_end: Some(Utc.with_ymd_and_hms(2026, 9, 1, 0, 0, 0).unwrap()),
+            has_grok_code_access: Some(true),
         }
     }
 
@@ -323,6 +415,82 @@ mod tests {
     #[test]
     fn plan_label_reports_the_monthly_allowance() {
         assert_eq!(plan_label(&sample_snap()), "4000 credits");
+    }
+
+    /// The tier-7 shape read off the live account on 2026-08-12: entitled,
+    /// spending, and no pool for any of it to be measured against.
+    fn no_pool_snap(access: Option<bool>) -> GrokSnapshot {
+        GrokSnapshot {
+            monthly_limit: 0.0,
+            monthly_used: 224.0,
+            monthly_remaining: 0.0,
+            has_grok_code_access: access,
+            ..sample_snap()
+        }
+    }
+
+    #[test]
+    fn an_absent_pool_reports_credits_instead_of_a_fabricated_zero() {
+        let snap = no_pool_snap(Some(true));
+        let out = render(
+            &sample_outcome(snap.clone()),
+            &snap,
+            &Theme::default(),
+            &opts(),
+            now(),
+        );
+        assert!(out.text.contains("224 credits"), "got {}", out.text);
+        assert!(
+            !out.text.contains("0%"),
+            "an absent pool must not read as 0% used: {}",
+            out.text
+        );
+    }
+
+    #[test]
+    fn an_absent_pool_leaves_the_percentage_placeholders_empty() {
+        let values = build_placeholders(&no_pool_snap(Some(true)), now());
+        assert_eq!(values.get("grok_monthly_pct").map(String::as_str), Some(""));
+        assert_eq!(values.get("weekly_pct").map(String::as_str), Some(""));
+        assert_eq!(
+            values.get("grok_nopool").map(String::as_str),
+            Some("nopool")
+        );
+        assert_eq!(values.get("grok_access").map(String::as_str), Some("yes"));
+    }
+
+    #[test]
+    fn an_absent_pool_never_renders_as_calm() {
+        // Low is the green that reported headroom for two days while the
+        // counter sat frozen. Anything but that.
+        assert_eq!(severity(&no_pool_snap(Some(true))), PaceSeverity::Mid);
+        assert_eq!(severity(&no_pool_snap(None)), PaceSeverity::Mid);
+        assert_eq!(severity(&no_pool_snap(Some(false))), PaceSeverity::Critical);
+    }
+
+    #[test]
+    fn plan_label_falls_back_to_the_entitlement_without_a_pool() {
+        assert_eq!(plan_label(&no_pool_snap(Some(true))), "Grok Code, no pool");
+        assert_eq!(
+            plan_label(&no_pool_snap(Some(false))),
+            "no Grok Code access"
+        );
+        assert_eq!(plan_label(&no_pool_snap(None)), "no credit pool");
+    }
+
+    #[test]
+    fn the_tooltip_names_the_missing_allowance_instead_of_printing_a_ratio() {
+        let snap = no_pool_snap(Some(true));
+        let tip = render_tooltip(
+            &sample_outcome(snap.clone()),
+            &snap,
+            &Theme::default(),
+            now(),
+        );
+        assert!(tip.contains("224 used"), "got {tip}");
+        assert!(tip.contains("no included allowance"), "got {tip}");
+        assert!(!tip.contains("224 / 0"), "the ratio is the lie: {tip}");
+        assert!(tip.contains("Grok Code access"), "got {tip}");
     }
 
     #[test]

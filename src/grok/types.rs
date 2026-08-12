@@ -58,8 +58,10 @@ impl BillingResponse {
             .config
             .ok_or_else(|| AppError::Schema("grok: missing billing config".into()))?;
 
-        // The monthly allowance is the whole point of the row: without it there
-        // is no denominator, and silently showing 0% would hide the drift.
+        // An ABSENT allowance is schema drift and must be loud. A PRESENT zero
+        // is not: tiers that are not metered in credits answer `monthlyLimit: 0`
+        // while the account works normally, and the snapshot carries that
+        // through so the renderer can say "no pool" instead of "0% used".
         let monthly_limit = parse_amount(&config.monthly_limit, "monthlyLimit")?
             .ok_or_else(|| AppError::Schema("grok: missing monthlyLimit".into()))?;
         let monthly_used = parse_amount(&config.used, "used")?.unwrap_or(0.0);
@@ -72,8 +74,20 @@ impl BillingResponse {
             on_demand_cap,
             period_start: parse_timestamp(config.billing_period_start.as_deref())?,
             period_end: parse_timestamp(config.billing_period_end.as_deref())?,
+            // Filled in by the fetch layer from `/v1/user`; billing knows
+            // nothing about entitlement.
+            has_grok_code_access: None,
         })
     }
+}
+
+/// `/v1/user` — the only place that says whether the account is entitled to
+/// Grok Code at all. Everything else on it is identity, which this ignores.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct UserResponse {
+    #[serde(rename = "hasGrokCodeAccess", alias = "has_grok_code_access")]
+    pub has_grok_code_access: Option<bool>,
 }
 
 fn parse_amount(amount: &Option<Amount>, name: &str) -> Result<Option<f64>> {
@@ -123,7 +137,7 @@ mod tests {
         assert_eq!(snap.monthly_limit, 4000.0);
         assert_eq!(snap.monthly_used, 120.0);
         assert_eq!(snap.monthly_remaining, 3880.0);
-        assert_eq!(snap.monthly_pct(), 3);
+        assert_eq!(snap.monthly_pct(), Some(3));
         assert!(snap.period_end.is_some());
     }
 
@@ -142,7 +156,23 @@ mod tests {
             snapshot_of(r#"{"config": {"monthlyLimit": {"val": 100}, "used": {"val": 130}}}"#)
                 .unwrap();
         assert_eq!(snap.monthly_remaining, 0.0);
-        assert_eq!(snap.monthly_pct(), 100);
+        assert_eq!(snap.monthly_pct(), Some(100));
+    }
+
+    #[test]
+    fn a_present_zero_allowance_parses_and_has_no_percentage() {
+        // What a tier without a credit pool answers while the account works
+        // normally. Absent would be drift; zero is a state to carry through.
+        let snap = snapshot_of(r#"{"config": {"monthlyLimit": {"val": 0}, "used": {"val": 224}}}"#)
+            .unwrap();
+        assert!(!snap.has_pool());
+        assert_eq!(snap.monthly_pct(), None);
+        assert_eq!(snap.monthly_used, 224.0);
+    }
+
+    #[test]
+    fn billing_never_claims_to_know_the_entitlement() {
+        assert_eq!(snapshot_of(SAMPLE).unwrap().has_grok_code_access, None);
     }
 
     #[test]
@@ -161,6 +191,6 @@ mod tests {
     fn absent_usage_counts_as_nothing_spent() {
         let snap = snapshot_of(r#"{"config": {"monthlyLimit": {"val": 4000}}}"#).unwrap();
         assert_eq!(snap.monthly_used, 0.0);
-        assert_eq!(snap.monthly_pct(), 0);
+        assert_eq!(snap.monthly_pct(), Some(0));
     }
 }

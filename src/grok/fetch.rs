@@ -32,12 +32,16 @@ pub const SPENDING_BLOCK_MESSAGE: &str =
 #[derive(Debug, Clone)]
 pub struct Endpoints {
     pub billing: String,
+    /// Entitlement. Separate from billing because xAI keeps them apart: an
+    /// account can hold Grok Code access and still report an empty credit pool.
+    pub user: String,
 }
 
 impl Default for Endpoints {
     fn default() -> Self {
         Self {
             billing: format!("{BASE_URL}/billing"),
+            user: format!("{BASE_URL}/user"),
         }
     }
 }
@@ -98,7 +102,11 @@ async fn fetch_pool(
     }
 
     match fetch_live(client, &endpoints.billing, &creds.key).await {
-        Ok(snap) => {
+        Ok(mut snap) => {
+            // Best effort on purpose: entitlement only sharpens the wording of
+            // a card the pool already fills in. A card that refuses to render
+            // because a secondary endpoint blinked would be a worse trade.
+            snap.has_grok_code_access = fetch_access(client, &endpoints.user, &creds.key).await;
             let bytes = serde_json::to_vec(&snap_to_json(&snap)).unwrap_or_default();
             cache.write_payload(&bytes)?;
             Ok(FetchOutcome {
@@ -170,6 +178,10 @@ fn parse_cache(bytes: &[u8]) -> Result<GrokSnapshot> {
         on_demand_cap: parse_cache_f64(&v["on_demand_cap"], "on_demand_cap")?,
         period_start: parse_cache_datetime(&v["period_start"])?,
         period_end: parse_cache_datetime(&v["period_end"])?,
+        // Absent in caches written before this field existed, and null whenever
+        // the entitlement call did not answer. Both mean "unknown", which is
+        // exactly what `as_bool` yields here.
+        has_grok_code_access: v["has_grok_code_access"].as_bool(),
     })
 }
 
@@ -197,7 +209,33 @@ fn snap_to_json(snap: &GrokSnapshot) -> serde_json::Value {
         "on_demand_cap": snap.on_demand_cap,
         "period_start": snap.period_start.map(|dt| dt.to_rfc3339()),
         "period_end": snap.period_end.map(|dt| dt.to_rfc3339()),
+        "has_grok_code_access": snap.has_grok_code_access,
     })
+}
+
+/// Entitlement, or `None` when the call fails, times out or answers a shape we
+/// do not recognise. A cache written before this field existed also lands here,
+/// which is why the renderer must stay honest about not knowing.
+async fn fetch_access(client: &reqwest::Client, url: &str, token: &str) -> Option<bool> {
+    let resp = tokio::time::timeout(
+        HTTP_TIMEOUT,
+        client
+            .get(url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/json")
+            .send(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+
+    if !resp.status().is_success() {
+        return None;
+    }
+    let bytes = resp.bytes().await.ok()?;
+    serde_json::from_slice::<super::types::UserResponse>(&bytes)
+        .ok()?
+        .has_grok_code_access
 }
 
 async fn fetch_live(client: &reqwest::Client, url: &str, token: &str) -> Result<GrokSnapshot> {
@@ -291,6 +329,7 @@ mod tests {
         let (_td, cache) = cache_fixture();
         let creds = creds_fixture("2099-01-01T00:00:00Z");
         let endpoints = Endpoints {
+            user: format!("{}/user", server.url()),
             billing: format!("{}/v1/billing", server.url()),
         };
         let out = fetch_snapshot(
@@ -306,8 +345,94 @@ mod tests {
         m.assert_async().await;
         assert_eq!(out.snapshot.monthly_limit, 4000.0);
         assert_eq!(out.snapshot.monthly_used, 200.0);
-        assert_eq!(out.snapshot.monthly_pct(), 5);
+        assert_eq!(out.snapshot.monthly_pct(), Some(5));
         assert!(!out.stale);
+    }
+
+    #[tokio::test]
+    async fn the_entitlement_is_fetched_and_survives_the_cache_round_trip() {
+        let mut server = mockito::Server::new_async().await;
+        let billing = server
+            .mock("GET", "/v1/billing")
+            .with_status(200)
+            .with_body(r#"{"config": {"monthlyLimit": {"val": 0}, "used": {"val": 224}}}"#)
+            .create_async()
+            .await;
+        let user = server
+            .mock("GET", "/v1/user")
+            .with_status(200)
+            .with_body(r#"{"hasGrokCodeAccess": true, "email": "x@y.z"}"#)
+            .match_header("authorization", "Bearer tok")
+            .create_async()
+            .await;
+
+        let (_td, cache) = cache_fixture();
+        let creds = creds_fixture("2099-01-01T00:00:00Z");
+        let endpoints = Endpoints {
+            user: format!("{}/v1/user", server.url()),
+            billing: format!("{}/v1/billing", server.url()),
+        };
+        let client = reqwest::Client::new();
+        let out = fetch_snapshot(&client, creds.path(), &cache, &endpoints, Duration::ZERO)
+            .await
+            .unwrap();
+
+        billing.assert_async().await;
+        user.assert_async().await;
+        assert_eq!(out.snapshot.has_grok_code_access, Some(true));
+        assert_eq!(out.snapshot.monthly_pct(), None);
+
+        // Served from cache next time, and the entitlement has to come back
+        // with it or the card silently downgrades to "unknown" for a whole TTL.
+        let cached = fetch_snapshot(
+            &client,
+            creds.path(),
+            &cache,
+            &endpoints,
+            Duration::from_secs(600),
+        )
+        .await
+        .unwrap();
+        assert_eq!(cached.snapshot.has_grok_code_access, Some(true));
+    }
+
+    #[tokio::test]
+    async fn a_failing_entitlement_call_leaves_the_pool_card_intact() {
+        let mut server = mockito::Server::new_async().await;
+        let billing = server
+            .mock("GET", "/v1/billing")
+            .with_status(200)
+            .with_body(sample_json())
+            .create_async()
+            .await;
+        let user = server
+            .mock("GET", "/v1/user")
+            .with_status(500)
+            .create_async()
+            .await;
+
+        let (_td, cache) = cache_fixture();
+        let creds = creds_fixture("2099-01-01T00:00:00Z");
+        let endpoints = Endpoints {
+            user: format!("{}/v1/user", server.url()),
+            billing: format!("{}/v1/billing", server.url()),
+        };
+        let out = fetch_snapshot(
+            &reqwest::Client::new(),
+            creds.path(),
+            &cache,
+            &endpoints,
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+
+        billing.assert_async().await;
+        user.assert_async().await;
+        // Unknown, not an error, and none of it reaches the user as a failure.
+        assert_eq!(out.snapshot.has_grok_code_access, None);
+        assert_eq!(out.snapshot.monthly_pct(), Some(5));
+        assert_eq!(out.last_error, None);
     }
 
     #[tokio::test]
@@ -326,6 +451,7 @@ mod tests {
             .unwrap();
         let creds = creds_fixture("2020-01-01T00:00:00Z");
         let endpoints = Endpoints {
+            user: format!("{}/user", server.url()),
             billing: format!("{}/v1/billing", server.url()),
         };
         let out = fetch_snapshot(
@@ -362,6 +488,7 @@ mod tests {
             .unwrap();
         let creds = creds_fixture("2099-01-01T00:00:00Z");
         let endpoints = Endpoints {
+            user: format!("{}/user", server.url()),
             billing: format!("{}/v1/billing", server.url()),
         };
         let out = fetch_snapshot(
@@ -397,6 +524,7 @@ mod tests {
             .unwrap();
         let creds = creds_fixture("2099-01-01T00:00:00Z");
         let endpoints = Endpoints {
+            user: format!("{}/user", server.url()),
             billing: format!("{}/v1/billing", server.url()),
         };
         let out = fetch_snapshot(
@@ -427,6 +555,7 @@ mod tests {
             .unwrap();
         let creds = creds_fixture("2099-01-01T00:00:00Z");
         let endpoints = Endpoints {
+            user: format!("{}/user", server.url()),
             billing: format!("{}/v1/billing", server.url()),
         };
         let out = fetch_snapshot(
