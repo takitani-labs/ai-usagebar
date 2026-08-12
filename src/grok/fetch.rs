@@ -35,6 +35,8 @@ pub struct Endpoints {
     /// Entitlement. Separate from billing because xAI keeps them apart: an
     /// account can hold Grok Code access and still report an empty credit pool.
     pub user: String,
+    /// The CLI's config feed, which is where the plan is finally named.
+    pub settings: String,
 }
 
 impl Default for Endpoints {
@@ -42,6 +44,7 @@ impl Default for Endpoints {
         Self {
             billing: format!("{BASE_URL}/billing"),
             user: format!("{BASE_URL}/user"),
+            settings: format!("{BASE_URL}/settings"),
         }
     }
 }
@@ -107,6 +110,7 @@ async fn fetch_pool(
             // a card the pool already fills in. A card that refuses to render
             // because a secondary endpoint blinked would be a worse trade.
             snap.has_grok_code_access = fetch_access(client, &endpoints.user, &creds.key).await;
+            snap.plan_display = fetch_plan_display(client, &endpoints.settings, &creds.key).await;
             let bytes = serde_json::to_vec(&snap_to_json(&snap)).unwrap_or_default();
             cache.write_payload(&bytes)?;
             Ok(FetchOutcome {
@@ -182,6 +186,7 @@ fn parse_cache(bytes: &[u8]) -> Result<GrokSnapshot> {
         // the entitlement call did not answer. Both mean "unknown", which is
         // exactly what `as_bool` yields here.
         has_grok_code_access: v["has_grok_code_access"].as_bool(),
+        plan_display: v["plan_display"].as_str().map(str::to_owned),
     })
 }
 
@@ -210,6 +215,7 @@ fn snap_to_json(snap: &GrokSnapshot) -> serde_json::Value {
         "period_start": snap.period_start.map(|dt| dt.to_rfc3339()),
         "period_end": snap.period_end.map(|dt| dt.to_rfc3339()),
         "has_grok_code_access": snap.has_grok_code_access,
+        "plan_display": snap.plan_display,
     })
 }
 
@@ -236,6 +242,32 @@ async fn fetch_access(client: &reqwest::Client, url: &str, token: &str) -> Optio
     serde_json::from_slice::<super::types::UserResponse>(&bytes)
         .ok()?
         .has_grok_code_access
+}
+
+/// The plan's commercial name, straight from the CLI's settings feed. Best
+/// effort for the same reason as the entitlement: it improves the label and
+/// nothing depends on it.
+async fn fetch_plan_display(client: &reqwest::Client, url: &str, token: &str) -> Option<String> {
+    let resp = tokio::time::timeout(
+        HTTP_TIMEOUT,
+        client
+            .get(url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/json")
+            .send(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+
+    if !resp.status().is_success() {
+        return None;
+    }
+    let bytes = resp.bytes().await.ok()?;
+    serde_json::from_slice::<super::types::SettingsResponse>(&bytes)
+        .ok()?
+        .subscription_tier_display
+        .filter(|s| !s.trim().is_empty())
 }
 
 async fn fetch_live(client: &reqwest::Client, url: &str, token: &str) -> Result<GrokSnapshot> {
@@ -329,6 +361,7 @@ mod tests {
         let (_td, cache) = cache_fixture();
         let creds = creds_fixture("2099-01-01T00:00:00Z");
         let endpoints = Endpoints {
+            settings: format!("{}/v1/settings", server.url()),
             user: format!("{}/user", server.url()),
             billing: format!("{}/v1/billing", server.url()),
         };
@@ -369,6 +402,7 @@ mod tests {
         let (_td, cache) = cache_fixture();
         let creds = creds_fixture("2099-01-01T00:00:00Z");
         let endpoints = Endpoints {
+            settings: format!("{}/v1/settings", server.url()),
             user: format!("{}/v1/user", server.url()),
             billing: format!("{}/v1/billing", server.url()),
         };
@@ -414,6 +448,7 @@ mod tests {
         let (_td, cache) = cache_fixture();
         let creds = creds_fixture("2099-01-01T00:00:00Z");
         let endpoints = Endpoints {
+            settings: format!("{}/v1/settings", server.url()),
             user: format!("{}/v1/user", server.url()),
             billing: format!("{}/v1/billing", server.url()),
         };
@@ -451,6 +486,7 @@ mod tests {
             .unwrap();
         let creds = creds_fixture("2020-01-01T00:00:00Z");
         let endpoints = Endpoints {
+            settings: format!("{}/v1/settings", server.url()),
             user: format!("{}/user", server.url()),
             billing: format!("{}/v1/billing", server.url()),
         };
@@ -488,6 +524,7 @@ mod tests {
             .unwrap();
         let creds = creds_fixture("2099-01-01T00:00:00Z");
         let endpoints = Endpoints {
+            settings: format!("{}/v1/settings", server.url()),
             user: format!("{}/user", server.url()),
             billing: format!("{}/v1/billing", server.url()),
         };
@@ -524,6 +561,7 @@ mod tests {
             .unwrap();
         let creds = creds_fixture("2099-01-01T00:00:00Z");
         let endpoints = Endpoints {
+            settings: format!("{}/v1/settings", server.url()),
             user: format!("{}/user", server.url()),
             billing: format!("{}/v1/billing", server.url()),
         };
@@ -555,6 +593,7 @@ mod tests {
             .unwrap();
         let creds = creds_fixture("2099-01-01T00:00:00Z");
         let endpoints = Endpoints {
+            settings: format!("{}/v1/settings", server.url()),
             user: format!("{}/user", server.url()),
             billing: format!("{}/v1/billing", server.url()),
         };

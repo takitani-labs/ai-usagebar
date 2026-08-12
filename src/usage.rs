@@ -175,6 +175,11 @@ pub struct GrokSnapshot {
     /// live one that simply is not metered in credits, because `/v1/billing`
     /// reports the same empty pool for both.
     pub has_grok_code_access: Option<bool>,
+    /// `subscription_tier_display` from `/v1/settings`, e.g. "SuperGrok Plus".
+    /// The one place xAI names the plan: the JWT carries an opaque `tier: N`
+    /// and billing carries none at all, which is why this vendor spent its
+    /// first months labelling the row with the allowance instead.
+    pub plan_display: Option<String>,
 }
 
 impl Eq for GrokSnapshot {}

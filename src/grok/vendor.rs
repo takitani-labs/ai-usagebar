@@ -59,7 +59,9 @@ pub const DEFAULT_FORMAT: &str = "{grok_monthly_pct}%";
 /// A percentage needs a denominator. Accounts whose tier is not metered in
 /// credits have none, so the bar falls back to the one number still moving:
 /// what was spent this billing period.
-pub const DEFAULT_FORMAT_NO_POOL: &str = "{grok_monthly_used} credits";
+/// Nothing numeric is readable on a plan without a pool, so the bar carries the
+/// plan's name rather than a number that would have to be invented.
+pub const DEFAULT_FORMAT_NO_POOL: &str = "{plan}";
 
 /// Credits are billed fractionally but almost always land on whole numbers;
 /// print them the way the Grok Build UI does instead of as `4000.0`.
@@ -80,6 +82,11 @@ pub fn credits(value: f64) -> String {
 /// fall back to the entitlement, which is the only other thing xAI will say
 /// about the account.
 pub fn plan_label(snap: &GrokSnapshot) -> String {
+    // `/v1/settings` names the plan outright ("SuperGrok Plus"). It is the only
+    // place in this API that does, and it beats every fallback below.
+    if let Some(name) = snap.plan_display.as_deref() {
+        return name.to_string();
+    }
     if snap.has_pool() {
         return format!("{} credits", credits(snap.monthly_limit));
     }
@@ -142,11 +149,18 @@ pub fn build_placeholders(
 pub fn severity(snap: &GrokSnapshot) -> PaceSeverity {
     match snap.monthly_pct() {
         Some(pct) => severity_for(pct),
-        // Nothing to pace against. This must not fall to Low: Low is the green
-        // that reported calm headroom for two days while the counter sat frozen
-        // and the pool read zero. An entitlement xAI actively denies is worth
-        // more than a warning, since no amount of waiting fixes it.
+        // No pool to pace against, so the level says how well that is
+        // understood rather than how much is left.
+        //
+        // Denied entitlement is the one that stays red: nothing about waiting
+        // fixes it. A named plan plus access is a healthy account whose meter
+        // simply lives somewhere this cannot reach, and nagging yellow forever
+        // about a permanent, known condition is just noise. Everything else is
+        // genuinely unexplained and keeps the warning.
         None if snap.has_grok_code_access == Some(false) => PaceSeverity::Critical,
+        None if snap.plan_display.is_some() && snap.has_grok_code_access == Some(true) => {
+            PaceSeverity::Low
+        }
         None => PaceSeverity::Mid,
     }
 }
@@ -255,18 +269,25 @@ fn render_tooltip(
                 remaining = credits(snap.monthly_remaining),
             )));
         }
-        // No denominator: report the spend and say plainly that there is
-        // nothing to measure it against, rather than implying a full tank.
+        // No denominator, and the credits counter is a leftover from whatever
+        // plan last had a pool: it froze at the switch and never moves again.
+        // Printing it would only invite the reading it used to get.
         None => {
+            let _ = &reset;
             lines.push(TooltipLine::Body(format!(
-                " <span foreground='{fg}'>  󰅄  Credits this period</span>"
+                " <span foreground='{fg}'>  󰅄  Usage</span>"
             )));
             lines.push(TooltipLine::Body(format!(
-                "   <span font_weight='bold' foreground='{monthly_color}'>{used} used</span>",
-                used = credits(snap.monthly_used),
+                "   <span font_weight='bold' foreground='{monthly_color}'>not readable here</span>",
             )));
             lines.push(TooltipLine::Body(format!(
-                " <span foreground='{dim}'>     no included allowance · reset {reset}</span>"
+                " <span foreground='{dim}'>     this plan has no credit pool, and its</span>"
+            )));
+            lines.push(TooltipLine::Body(format!(
+                " <span foreground='{dim}'>     weekly limit is served only to the web</span>"
+            )));
+            lines.push(TooltipLine::Body(format!(
+                " <span foreground='{dim}'>     session, never to a CLI token</span>"
             )));
 
             let (icon, ecolor, detail) = match snap.has_grok_code_access {
@@ -376,6 +397,7 @@ mod tests {
             period_start: Some(Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).unwrap()),
             period_end: Some(Utc.with_ymd_and_hms(2026, 9, 1, 0, 0, 0).unwrap()),
             has_grok_code_access: Some(true),
+            plan_display: None,
         }
     }
 
@@ -430,8 +452,11 @@ mod tests {
     }
 
     #[test]
-    fn an_absent_pool_reports_credits_instead_of_a_fabricated_zero() {
-        let snap = no_pool_snap(Some(true));
+    fn an_absent_pool_shows_the_plan_rather_than_inventing_a_number() {
+        let snap = GrokSnapshot {
+            plan_display: Some("SuperGrok Plus".into()),
+            ..no_pool_snap(Some(true))
+        };
         let out = render(
             &sample_outcome(snap.clone()),
             &snap,
@@ -439,12 +464,15 @@ mod tests {
             &opts(),
             now(),
         );
-        assert!(out.text.contains("224 credits"), "got {}", out.text);
+        assert!(out.text.contains("SuperGrok Plus"), "got {}", out.text);
         assert!(
-            !out.text.contains("0%"),
-            "an absent pool must not read as 0% used: {}",
+            !out.text.contains('%'),
+            "there is no percentage to show: {}",
             out.text
         );
+        // The credit counter froze when the plan that had a pool ended, so
+        // printing it would age into a lie.
+        assert!(!out.text.contains("224"), "got {}", out.text);
     }
 
     #[test]
@@ -479,18 +507,62 @@ mod tests {
     }
 
     #[test]
-    fn the_tooltip_names_the_missing_allowance_instead_of_printing_a_ratio() {
-        let snap = no_pool_snap(Some(true));
+    fn the_tooltip_says_the_meter_is_out_of_reach_rather_than_printing_a_ratio() {
+        let snap = GrokSnapshot {
+            plan_display: Some("SuperGrok Plus".into()),
+            ..no_pool_snap(Some(true))
+        };
         let tip = render_tooltip(
             &sample_outcome(snap.clone()),
             &snap,
             &Theme::default(),
             now(),
         );
-        assert!(tip.contains("224 used"), "got {tip}");
-        assert!(tip.contains("no included allowance"), "got {tip}");
+        assert!(tip.contains("SuperGrok Plus"), "got {tip}");
+        assert!(tip.contains("not readable here"), "got {tip}");
+        assert!(tip.contains("weekly limit"), "got {tip}");
         assert!(!tip.contains("224 / 0"), "the ratio is the lie: {tip}");
-        assert!(tip.contains("Grok Code access"), "got {tip}");
+        assert!(
+            !tip.contains("224"),
+            "the frozen counter must not appear: {tip}"
+        );
+    }
+
+    #[test]
+    fn the_settings_plan_name_wins_over_every_fallback() {
+        let named = |snap: GrokSnapshot| GrokSnapshot {
+            plan_display: Some("SuperGrok Plus".into()),
+            ..snap
+        };
+        assert_eq!(plan_label(&named(sample_snap())), "SuperGrok Plus");
+        assert_eq!(
+            plan_label(&named(no_pool_snap(Some(true)))),
+            "SuperGrok Plus"
+        );
+        assert_eq!(
+            plan_label(&named(no_pool_snap(Some(false)))),
+            "SuperGrok Plus"
+        );
+    }
+
+    #[test]
+    fn a_named_plan_with_access_and_no_pool_is_not_a_warning() {
+        // A healthy account whose meter lives somewhere this cannot reach. It
+        // stays that way forever, so a permanent yellow would only be noise.
+        let snap = GrokSnapshot {
+            plan_display: Some("SuperGrok Plus".into()),
+            ..no_pool_snap(Some(true))
+        };
+        assert_eq!(severity(&snap), PaceSeverity::Low);
+        // Unexplained keeps the warning, and denied access still goes red.
+        assert_eq!(severity(&no_pool_snap(Some(true))), PaceSeverity::Mid);
+        assert_eq!(
+            severity(&GrokSnapshot {
+                plan_display: Some("SuperGrok Plus".into()),
+                ..no_pool_snap(Some(false))
+            }),
+            PaceSeverity::Critical
+        );
     }
 
     #[test]

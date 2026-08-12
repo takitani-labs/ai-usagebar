@@ -74,9 +74,10 @@ impl BillingResponse {
             on_demand_cap,
             period_start: parse_timestamp(config.billing_period_start.as_deref())?,
             period_end: parse_timestamp(config.billing_period_end.as_deref())?,
-            // Filled in by the fetch layer from `/v1/user`; billing knows
-            // nothing about entitlement.
+            // Both filled in by the fetch layer, from `/v1/user` and
+            // `/v1/settings`; billing knows nothing about either.
             has_grok_code_access: None,
+            plan_display: None,
         })
     }
 }
@@ -88,6 +89,14 @@ impl BillingResponse {
 pub struct UserResponse {
     #[serde(rename = "hasGrokCodeAccess", alias = "has_grok_code_access")]
     pub has_grok_code_access: Option<bool>,
+}
+
+/// `/v1/settings` — the CLI's own config feed. It carries one field this cares
+/// about, and everything else on it is client behaviour.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct SettingsResponse {
+    pub subscription_tier_display: Option<String>,
 }
 
 fn parse_amount(amount: &Option<Amount>, name: &str) -> Result<Option<f64>> {
