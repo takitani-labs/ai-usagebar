@@ -42,6 +42,11 @@ fn main() {
     // An administrative report, not the widget: it needs the runtime but must
     // not go through the always-exit-0 Waybar contract — a script piping this
     // deserves a real exit code.
+    // Local-only report: no runtime needed, and like Usage it must not inherit
+    // the widget's always-exit-0 contract.
+    if let Some(Command::Projects { json }) = &cli.command {
+        std::process::exit(run_projects(*json));
+    }
     if let Some(Command::Usage { json }) = &cli.command {
         std::process::exit(rt.block_on(ai_usagebar::report::run(*json)));
     }
@@ -122,4 +127,24 @@ async fn run_nous_auth(action: &NousAuthAction) -> i32 {
             }
         }
     }
+}
+
+fn run_projects(json: bool) -> i32 {
+    use std::io::Write;
+    let result = ai_usagebar::claude_projects::scan(chrono::Utc::now());
+    let mut out = std::io::stdout();
+    if json {
+        if serde_json::to_writer(&mut out, &result.report).is_err() {
+            return 1;
+        }
+        let _ = writeln!(out);
+    } else {
+        for warning in &result.warnings {
+            eprintln!("ai-usagebar: {warning}");
+        }
+        if ai_usagebar::claude_projects::print_pretty(&mut out, &result.report).is_err() {
+            return 1;
+        }
+    }
+    0
 }

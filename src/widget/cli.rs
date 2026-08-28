@@ -143,6 +143,14 @@ pub enum Command {
         action: AccountAction,
     },
 
+    /// Per-project share of local Claude Code usage, from the transcripts on
+    /// this machine. Local only: it makes no network call.
+    Projects {
+        /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Quota and time-to-reset for every configured vendor and account.
     Usage {
         /// Machine-readable output.

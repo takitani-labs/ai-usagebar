@@ -494,6 +494,11 @@ pub struct SuperGrokSnapshot {
     pub reset_at: Option<DateTime<Utc>>,
     /// Remaining prepaid (purchased) API credit in USD, when present.
     pub prepaid_balance: Option<f64>,
+    /// Whether the server actually meters this plan in credits. Tiers that do
+    /// not (SuperGrok Plus answers `monthlyLimit: 0` while turns go through)
+    /// have no denominator, so `weekly_pct` is 0 for lack of a number rather
+    /// than for lack of usage — and a 0% gauge would read as "nothing used".
+    pub metered: bool,
 }
 
 impl Eq for SuperGrokSnapshot {}
