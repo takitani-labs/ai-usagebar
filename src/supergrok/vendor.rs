@@ -39,6 +39,10 @@ pub fn build_placeholders(
         ("weekly_reset", reset.clone()),
         // SuperGrok-specific.
         ("sgk_plan", snap.plan.clone()),
+        (
+            "sgk_nopool",
+            if snap.metered { String::new() } else { "nopool".to_string() },
+        ),
         ("sgk_pct", pct),
         ("sgk_reset", reset),
         ("sgk_period", snap.period.label().to_string()),
@@ -57,12 +61,25 @@ pub fn render(
     opts: &RenderOpts,
     now: DateTime<Utc>,
 ) -> WaybarOutput {
-    let class = Class::from(severity(snap));
+    // A refusal outranks the pool: a calm percentage means nothing while every
+    // turn comes back 403.
+    let blocked = outcome.last_error.as_ref().is_some_and(|(_, msg)| {
+        msg == super::fetch::SPENDING_BLOCK_MESSAGE
+    });
+    let class = if blocked {
+        Class::Critical
+    } else {
+        Class::from(severity(snap))
+    };
     let format = opts
         .format
         .clone()
         .unwrap_or_else(|| DEFAULT_FORMAT.to_string());
     let mut values = build_placeholders(snap, now);
+    values.insert(
+        "sgk_blocked",
+        if blocked { "blocked" } else { "" }.to_string(),
+    );
     for key in ["plan", "sgk_plan"] {
         if let Some(value) = values.get_mut(key) {
             *value = escape(value);
@@ -215,11 +232,28 @@ mod tests {
         SuperGrokSnapshot {
             plan: "SuperGrok".into(),
             account: "user-1".into(),
+            metered: true,
             weekly_pct: 34,
             period: SuperGrokPeriod::Weekly,
             reset_at: Some(now() + chrono::Duration::hours(20)),
             prepaid_balance: Some(0.0),
         }
+    }
+
+    #[test]
+    fn an_unmetered_plan_says_so_instead_of_showing_a_calm_zero() {
+        // SuperGrok Plus answers monthlyLimit 0 with turns going through. The
+        // percentage is 0 for lack of a denominator, so the tray needs to know
+        // not to draw a gauge that would read as "nothing used".
+        let mut snap = sample_snap();
+        snap.metered = false;
+        snap.weekly_pct = 0;
+        let values = build_placeholders(&snap, now());
+        assert_eq!(values.get("sgk_nopool").map(String::as_str), Some("nopool"));
+
+        let metered = sample_snap();
+        let values = build_placeholders(&metered, now());
+        assert_eq!(values.get("sgk_nopool").map(String::as_str), Some(""));
     }
 
     fn sample_outcome(snap: SuperGrokSnapshot) -> VendorOutcome {

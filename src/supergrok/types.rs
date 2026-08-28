@@ -86,8 +86,15 @@ pub fn to_snapshot(resp: BillingResponse, account_scope: &str) -> Result<SuperGr
         .map(|cents| checked_prepaid(cents.val))
         .transpose()?;
 
+    // Mirrors the arms of resolve_usage_percent: a derivable percentage means
+    // the plan is metered; the present-zero-limit arm means it is not.
+    let metered = cfg.credit_usage_percent.is_some()
+        || cfg.current_period.is_some()
+        || cfg.monthly_limit.as_ref().is_some_and(|l| l.val > 0);
+
     Ok(SuperGrokSnapshot {
         plan,
+        metered,
         account: account_scope.to_string(),
         weekly_pct,
         period,
@@ -125,6 +132,13 @@ fn resolve_usage_percent(cfg: &BillingConfig) -> Result<i32> {
         (Some(used), Some(limit)) if limit.val > 0 && used.val >= 0 => {
             checked_percent((used.val as f64 / limit.val as f64) * 100.0)
         }
+        // A PRESENT ZERO limit is not drift. Tiers that are not metered in
+        // credits here (SuperGrok Plus, measured 2026-08-28: monthlyLimit 0
+        // with used 224) answer exactly this while the account works normally,
+        // and the percentage is simply not derivable — the same situation the
+        // typed-current-period arm above already answers with 0. Negative
+        // counters remain drift and stay loud.
+        (Some(used), Some(limit)) if limit.val == 0 && used.val >= 0 => Ok(0),
         (Some(_), Some(_)) => Err(AppError::Schema(
             "Grok Build legacy billing counters are negative or have a non-positive limit".into(),
         )),

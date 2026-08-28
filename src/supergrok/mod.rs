@@ -11,8 +11,11 @@
 //! balance with a management key — SuperGrok is the subscription quota path.
 
 pub mod acp;
+pub mod block;
+pub mod creds;
 pub mod fetch;
 pub mod scope;
+pub mod token;
 pub mod types;
 pub mod vendor;
 

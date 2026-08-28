@@ -12,10 +12,10 @@ use crate::error::{AppError, Result};
 use crate::usage::{SuperGrokPeriod, SuperGrokSnapshot};
 
 use super::scope::ScopePaths;
-use super::{acp, scope, types};
+use super::{acp, block, scope, types};
 
 const LOCK_TIMEOUT: Duration = Duration::from_secs(15);
-const CACHE_SCHEMA: u8 = 2;
+const CACHE_SCHEMA: u8 = 3;
 
 #[derive(Debug, Clone)]
 pub struct FetchOutcome {
@@ -25,20 +25,43 @@ pub struct FetchOutcome {
     pub cache_age: Option<Duration>,
 }
 
+/// Stored when the CLI's log shows the last turn was refused for spending.
+/// NOT the pool running dry: this account has no pool at all (monthlyLimit 0)
+/// and can still be refused, which is exactly why the log is the only source.
+pub const SPENDING_BLOCK_MESSAGE: &str =
+    "Grok is refusing turns: spending limit reached, add credits or upgrade";
+
 pub async fn fetch_snapshot(
     grok_binary: &Path,
     scope_paths: &ScopePaths,
     cache: &Cache,
     cache_ttl: Duration,
 ) -> Result<FetchOutcome> {
-    fetch_snapshot_with(
+    let mut outcome = fetch_snapshot_with(
         cache,
         cache_ttl,
         Utc::now(),
         || scope::fingerprint(scope_paths),
-        || acp::fetch_billing(grok_binary),
+        || billing_via_token_then_acp(grok_binary, &scope_paths.auth),
     )
-    .await
+    .await?;
+
+    // A live refusal outranks whatever the billing figures say, and it applies
+    // to the cached path too, which would otherwise stay silent for a whole
+    // TTL. The log sits next to the auth file, so a GROK_HOME override is
+    // honoured for free. `period_start` is None because the snapshot does not
+    // carry one: the "a later success clears it" rule is what keeps this
+    // honest, and it does not need the period.
+    let log = scope_paths
+        .auth
+        .parent()
+        .map(|dir| dir.join("logs").join("unified.jsonl"));
+    if let Some(log) = log
+        && block::active(&log, None).is_some()
+    {
+        outcome.last_error = Some((403, SPENDING_BLOCK_MESSAGE.to_string()));
+    }
+    Ok(outcome)
 }
 
 async fn fetch_snapshot_with<S, F, Fut>(
@@ -102,6 +125,10 @@ fn period_has_ended(snapshot: &SuperGrokSnapshot, now: DateTime<Utc>) -> bool {
     snapshot.reset_at.is_some_and(|reset| reset <= now)
 }
 
+fn metered_default() -> bool {
+    true
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct CachedEnvelope {
     schema: u8,
@@ -112,6 +139,8 @@ struct CachedEnvelope {
 #[derive(Debug, Serialize, Deserialize)]
 struct CachedSnapshot {
     plan: String,
+    #[serde(default = "metered_default")]
+    metered: bool,
     percent: i32,
     period: String,
     reset_at: Option<DateTime<Utc>>,
@@ -130,6 +159,7 @@ impl CachedEnvelope {
             scope: scope.to_string(),
             snapshot: CachedSnapshot {
                 plan: snapshot.plan.clone(),
+                metered: snapshot.metered,
                 percent: snapshot.weekly_pct,
                 period: period.to_string(),
                 reset_at: snapshot.reset_at,
@@ -186,6 +216,7 @@ fn parse_cache(bytes: &[u8], account_scope: &str) -> Result<SuperGrokSnapshot> {
     Ok(SuperGrokSnapshot {
         plan: cached.snapshot.plan,
         account: account_scope.to_string(),
+        metered: cached.snapshot.metered,
         weekly_pct: cached.snapshot.percent,
         period,
         reset_at: cached.snapshot.reset_at,
@@ -475,5 +506,27 @@ mod tests {
         obsolete["schema"] = serde_json::json!(1);
         obsolete["account"] = serde_json::json!("person@example.test");
         assert!(parse_cache(obsolete.to_string().as_bytes(), "scope-a").is_err());
+    }
+}
+
+/// The token transport first, ACP second.
+///
+/// Upstream's ACP path is the documented one, but grok 1.0.5 answers
+/// `-32601 Method not found` for `x.ai/billing`, so on this machine it never
+/// succeeds. Trying the token first means the row works today; keeping ACP
+/// behind it means the row keeps working, unchanged, if xAI restores the
+/// method or ships a CLI that has it.
+async fn billing_via_token_then_acp(
+    grok_binary: &std::path::Path,
+    auth_path: &std::path::Path,
+) -> Result<super::types::BillingResponse> {
+    match super::token::fetch_billing(auth_path).await {
+        Ok(resp) => Ok(resp),
+        Err(token_err) => match acp::fetch_billing(grok_binary).await {
+            Ok(resp) => Ok(resp),
+            // The token error is the one worth reporting: it is the path that
+            // is expected to work, so its reason is the actionable one.
+            Err(_) => Err(token_err),
+        },
     }
 }
